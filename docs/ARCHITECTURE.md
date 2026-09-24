@@ -62,32 +62,35 @@ The line between (A) and (B) is the single most important line in this system. E
 
 **Framework:** Next.js (App Router), React, TypeScript, strict mode. SSR for the marketing site and any crawlable page; the scanning/results app itself is naturally client-heavy (camera, WASM, crypto) but still served through Next.js so auth, routing, and the marketing site share one codebase and deploy pipeline. See ADR-0002.
 
-Top-level structure (proposed, refined during M0 scaffolding):
+Top-level structure — **corrected during M0 scaffolding** from an earlier single-tree sketch: `web` and `api` are genuinely separate deployables (separate Docker Compose services per §12, separate `package.json`s, separate release cadence), so they're two packages in an npm workspaces monorepo, not one folder tree:
 
 ```
-/app
-  /(marketing)          -- SSR'd public pages: home, pricing, features, blog, legal
-  /(app)                -- authenticated teacher app (mostly client components)
-    /scan                -- live camera + auto-capture flow
-    /exams/[id]/review    -- Review Needed queue
-    /exams/[id]/results   -- results table + analytics
-    /templates             -- template library + custom template builder
-    /settings              -- account, encryption passphrase, recovery key, billing
-  /(school)              -- principal/school-admin views
-  /(admin)               -- separate deployment target / subdomain, see §11
-/lib
-  /scanning               -- OpenCV.js pipeline, corner detection, grid sampling
-  /crypto                 -- key generation, wrapping/unwrapping, AES-GCM helpers
-  /drive                  -- Drive file CRUD (browser-direct, no backend proxy)
-  /local-store             -- IndexedDB adapter for local-only mode
-  /billing                 -- entitlement checks, plan/usage helpers
-/server
-  /api                     -- Fastify app (accounts, billing, admin, usage counters)
-  /db                       -- Drizzle schema + migrations
-  /payments                 -- Paddle + Bank Alfalah adapters behind one interface
+/apps
+  /web                    -- Next.js app (npm workspace "web")
+    /app
+      /(marketing)          -- SSR'd public pages: home, pricing, features, blog, legal
+      /(app)                -- authenticated teacher app (mostly client components)
+        /scan                -- live camera + auto-capture flow
+        /exams/[id]/review    -- Review Needed queue
+        /exams/[id]/results   -- results table + analytics
+        /templates             -- template library + custom template builder
+        /settings              -- account, encryption passphrase, recovery key, billing
+      /(school)              -- principal/school-admin views
+      /(admin)               -- separate deployment target / subdomain, see §11
+    /lib
+      /scanning               -- OpenCV.js pipeline, corner detection, grid sampling
+      /crypto                 -- key generation, wrapping/unwrapping, AES-GCM helpers
+      /drive                  -- Drive file CRUD (browser-direct, no backend proxy)
+      /local-store             -- IndexedDB adapter for local-only mode
+      /billing                 -- entitlement checks, plan/usage helpers
+  /api                     -- Fastify app (npm workspace "api")
+    /src
+      /routes                 -- accounts, billing, admin, usage counters (§5)
+      /db                       -- Drizzle schema + migrations
+      /payments                 -- Paddle + Bank Alfalah adapters behind one interface
 ```
 
-The scanning, crypto, and Drive modules are deliberately framework-agnostic (plain TypeScript) so they're independently unit-testable without a browser/DOM, and so the core IP of the product (the detection pipeline) isn't tangled with UI code.
+The scanning, crypto, and Drive modules are deliberately framework-agnostic (plain TypeScript) so they're independently unit-testable without a browser/DOM, and so the core IP of the product (the detection pipeline) isn't tangled with UI code. As the admin panel (§11) grows, it may warrant becoming its own workspace (`apps/admin`) rather than a route group inside `web` — deferred until M5, not decided now.
 
 ---
 
@@ -99,7 +102,7 @@ Pipeline, per captured frame:
 2. **Stability gate** — corner positions must stay within a small pixel-delta tolerance for ~500ms before a capture is triggered (FR-SCAN-02). This is what makes auto-capture feel like "zero clicks" instead of grabbing blurry frames.
 3. **Perspective transform** — once stable, warp the frame to a normalized top-down rectangle using the 4 corners.
 4. **Grid sampling** — using the template's bubble-position geometry, sample each bubble region's fill ratio (e.g., dark-pixel density inside the bubble contour vs. a local background baseline, to stay robust to lighting).
-5. **Confidence classification** — each bubble/question becomes one of: *confident-filled*, *confident-empty*, or *ambiguous* (multiple marks, partial fill, erasure smudge). Thresholds here are the single biggest lever on the NFR-ACC-03 vs. NFR-ACC-04 tradeoff in the SRS and should be tunable constants, not hardcoded magic numbers, so they can be adjusted after M1 real-world testing without a re-architecture.
+5. **Confidence classification** — each bubble/question becomes one of: _confident-filled_, _confident-empty_, or _ambiguous_ (multiple marks, partial fill, erasure smudge). Thresholds here are the single biggest lever on the NFR-ACC-03 vs. NFR-ACC-04 tradeoff in the SRS and should be tunable constants, not hardcoded magic numbers, so they can be adjusted after M1 real-world testing without a re-architecture.
 6. **Scoring** — confident answers are scored immediately against the decrypted answer key held in memory; ambiguous ones are queued to the Review Needed list with a cropped image of just that question.
 7. **Roll-number read** — same bubble-grid technique applied to the roll-number block, matched against the decrypted roster.
 
@@ -121,7 +124,7 @@ The backend's job is deliberately narrow. It **never** receives: raw sheet image
 - Session issuance/validation (httpOnly signed cookie backed by a `sessions` table).
 - Billing (checkout handoff to Paddle/Bank Alfalah, webhook ingestion, entitlement state).
 - Usage counters (a number, incremented — see §6 and NFR-SEC-07).
-- Template *metadata/geometry* storage (non-sensitive, §4 of SRS).
+- Template _metadata/geometry_ storage (non-sensitive, §4 of SRS).
 - Admin operations (§11).
 - Feature flags / pricing config reads.
 
@@ -236,7 +239,7 @@ Every exam, answer key, roster, and result set is a single JSON document with th
 ```json
 {
   "schemaVersion": 1,
-  "type": "examResults",           // or "examKey", "roster", "template" (custom)
+  "type": "examResults", // or "examKey", "roster", "template" (custom)
   "recordId": "‹random uuid, non-identifying›",
   "iv": "‹base64›",
   "ciphertext": "‹base64, AES-256-GCM over the actual content›",
@@ -253,7 +256,7 @@ This is why the "servers can't read student data" property is structural rather 
 
 ## 8. Multi-tenant isolation
 
-Because student *content* never reaches Postgres, the isolation surface there is smaller than a typical multi-tenant SaaS — but not zero, and NFR-SEC-01 applies without exception to what remains: accounts, subscriptions, usage counters, templates, audit logs.
+Because student _content_ never reaches Postgres, the isolation surface there is smaller than a typical multi-tenant SaaS — but not zero, and NFR-SEC-01 applies without exception to what remains: accounts, subscriptions, usage counters, templates, audit logs.
 
 - Every tenant-scoped table carries an owning `user_id` or `school_id`.
 - **Postgres Row-Level Security (RLS)** policies enforce `user_id = current_setting('app.current_user_id')` (or the equivalent school-scoped check) on every tenant table, set per-request by the API layer after authenticating the session. This is defense-in-depth on top of the application-layer query scoping — a bug in a handler's `WHERE` clause still can't cross tenants, because the database itself refuses.
@@ -277,8 +280,8 @@ Two providers, one internal model. See ADR-0006.
 
 ```ts
 interface PaymentProviderAdapter {
-  createCheckout(input: { userId, plan, billingPeriod, seats? }): Promise<{ redirectUrl }>;
-  handleWebhook(rawRequest): Promise<NormalizedPaymentEvent>;   // verifies signature internally
+  createCheckout(input: { userId; plan; billingPeriod; seats? }): Promise<{ redirectUrl }>;
+  handleWebhook(rawRequest): Promise<NormalizedPaymentEvent>; // verifies signature internally
   refund(subscriptionId, amount?): Promise<void>;
   cancel(subscriptionId): Promise<void>;
 }
@@ -305,6 +308,7 @@ Why admins structurally cannot see student data (FR-ADMIN-11):
 3. Error/crash logging (FR-ADMIN-08) runs through a scrubbing layer before anything is persisted or shipped to a log viewer — request bodies for any endpoint that could plausibly carry client-side-encrypted blobs are excluded from logs by default (allow-list, not block-list, so a new endpoint is unlogged-by-default until explicitly reviewed).
 
 Also required:
+
 - 2FA (TOTP) or passkey login, enforced server-side (no client-only gate).
 - `robots.txt`/meta-robots `noindex, nofollow` on the entire subdomain.
 - Every mutating admin action server-side authorized against the acting admin's role and written to `admin_audit_log` (§6, §8).
@@ -329,20 +333,20 @@ Also required:
 
 ## 13. Threat model
 
-| Threat | Target | Mitigation |
-|---|---|---|
-| Cross-tenant data read (IDOR-style) | Another teacher's/school's Postgres rows | RLS policies (§8) as a hard backstop under app-layer scoping; every query path tested for tenant-scoping. |
-| Server compromise / DB dump | Student PII | Structurally absent from Postgres — an attacker who dumps the DB gets ciphertext blobs (wrapped keys) and account metadata, never student content. This is the single biggest payoff of the §7 design. |
-| Admin panel compromise (stolen admin credential) | Full user/billing control, no student data (see §11) | 2FA/passkey, audit log, recommended network-layer hardening (§11), least-privilege DB role for the app. |
-| Payment webhook spoofing | Fraudulent plan upgrades / fake refunds | Signature verification on every webhook (NFR-SEC-11), idempotency via `provider_event_id`. |
-| OAuth token theft (XSS or device compromise) | Teacher's Drive files created by our app | `drive.file` scope limits blast radius to app-created files only, never the teacher's whole Drive; session cookies httpOnly to resist XSS token theft; short-lived access tokens, refreshed via Google's normal OAuth refresh flow. |
-| XSS in the results table (student names rendered back into the UI) | Session/token theft, UI manipulation | React's default escaping + CSP headers; no `dangerouslySetInnerHTML` on any student-data-derived field. |
-| CSV/formula injection on export | Whoever opens the exported file in Excel/Sheets | Cell-value sanitization for leading `= + - @` (NFR-SEC-06) — an easy-to-miss class explicitly called out in the SRS. |
-| Free-tier quota bypass via client tampering | Revenue (minor) | Accepted risk, soft enforcement (NFR-SEC-07) — not worth DRM-style engineering at this price point; monitored via anomaly patterns (e.g., heavy usage with zero counter syncs) rather than prevented outright. |
-| Malicious/oversized image upload (custom template photo, batch scanner import) | Availability, storage abuse | Client-side size/type validation for UX; backend-side limits on anything that does transit the server (template geometry payloads, not images themselves — see §6, images for custom templates are processed to geometry client-side and only the derived geometry may be persisted); rate limiting on all endpoints (NFR-SEC-04). |
-| Forgotten Encryption Passphrase + lost Recovery Key | Permanent, unrecoverable data loss for that teacher (by design of true zero-knowledge encryption) | Explicit, unmissable UX warning at Recovery Key issuance (FR-AUTH-08); this is a real product-support-burden risk worth the founder's awareness, not just an engineering footnote — flagged again in the M0 report. |
-| Supply-chain (compromised npm dependency) | Full app compromise | Pinned versions + lockfile committed (required by kickoff prompt), automated dependency vulnerability scanning in CI (NFR-SEC-10). |
-| Google OAuth app verification lapse/rejection | Auth flow breaks for all users | Verification prep (privacy policy, domain ownership, branding, demo video) tracked as an explicit, launch-blocking M3 task, not an afterthought. |
+| Threat                                                                         | Target                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cross-tenant data read (IDOR-style)                                            | Another teacher's/school's Postgres rows                                                          | RLS policies (§8) as a hard backstop under app-layer scoping; every query path tested for tenant-scoping.                                                                                                                                                                                                                          |
+| Server compromise / DB dump                                                    | Student PII                                                                                       | Structurally absent from Postgres — an attacker who dumps the DB gets ciphertext blobs (wrapped keys) and account metadata, never student content. This is the single biggest payoff of the §7 design.                                                                                                                             |
+| Admin panel compromise (stolen admin credential)                               | Full user/billing control, no student data (see §11)                                              | 2FA/passkey, audit log, recommended network-layer hardening (§11), least-privilege DB role for the app.                                                                                                                                                                                                                            |
+| Payment webhook spoofing                                                       | Fraudulent plan upgrades / fake refunds                                                           | Signature verification on every webhook (NFR-SEC-11), idempotency via `provider_event_id`.                                                                                                                                                                                                                                         |
+| OAuth token theft (XSS or device compromise)                                   | Teacher's Drive files created by our app                                                          | `drive.file` scope limits blast radius to app-created files only, never the teacher's whole Drive; session cookies httpOnly to resist XSS token theft; short-lived access tokens, refreshed via Google's normal OAuth refresh flow.                                                                                                |
+| XSS in the results table (student names rendered back into the UI)             | Session/token theft, UI manipulation                                                              | React's default escaping + CSP headers; no `dangerouslySetInnerHTML` on any student-data-derived field.                                                                                                                                                                                                                            |
+| CSV/formula injection on export                                                | Whoever opens the exported file in Excel/Sheets                                                   | Cell-value sanitization for leading `= + - @` (NFR-SEC-06) — an easy-to-miss class explicitly called out in the SRS.                                                                                                                                                                                                               |
+| Free-tier quota bypass via client tampering                                    | Revenue (minor)                                                                                   | Accepted risk, soft enforcement (NFR-SEC-07) — not worth DRM-style engineering at this price point; monitored via anomaly patterns (e.g., heavy usage with zero counter syncs) rather than prevented outright.                                                                                                                     |
+| Malicious/oversized image upload (custom template photo, batch scanner import) | Availability, storage abuse                                                                       | Client-side size/type validation for UX; backend-side limits on anything that does transit the server (template geometry payloads, not images themselves — see §6, images for custom templates are processed to geometry client-side and only the derived geometry may be persisted); rate limiting on all endpoints (NFR-SEC-04). |
+| Forgotten Encryption Passphrase + lost Recovery Key                            | Permanent, unrecoverable data loss for that teacher (by design of true zero-knowledge encryption) | Explicit, unmissable UX warning at Recovery Key issuance (FR-AUTH-08); this is a real product-support-burden risk worth the founder's awareness, not just an engineering footnote — flagged again in the M0 report.                                                                                                                |
+| Supply-chain (compromised npm dependency)                                      | Full app compromise                                                                               | Pinned versions + lockfile committed (required by kickoff prompt), automated dependency vulnerability scanning in CI (NFR-SEC-10).                                                                                                                                                                                                 |
+| Google OAuth app verification lapse/rejection                                  | Auth flow breaks for all users                                                                    | Verification prep (privacy policy, domain ownership, branding, demo video) tracked as an explicit, launch-blocking M3 task, not an afterthought.                                                                                                                                                                                   |
 
 ---
 
@@ -358,7 +362,7 @@ Also required:
 (Full context lives in `docs/reports/SHARLO-M0-001.md` and `docs/reports/SHARLO-M0-007.md`; summarized here for architectural completeness. This section used to be phrased as open questions — all but one are now resolved.)
 
 1. **§9 / ADR-0005 — RESOLVED.** Encryption Passphrase confirmed as the resolution to the "password-derived wrap key" requirement. Founder additionally required the proactive Recovery Key reminder cadence now in the ADR-0005 addendum, which is what pulled transactional email (ADR-0011) into the architecture.
-2. **§6, §7, §10, ADR-0010 — RESOLVED.** School-plan dual-encryption confirmed, with school-key copies stored in a Drive location the *school admin* owns (Shared Drive preferred, folder fallback) rather than in individual teachers' Drives, for institutional-continuity reasons. Full access-grant mechanism (Google Picker requirement, teacher-removal handling) documented in the ADR.
+2. **§6, §7, §10, ADR-0010 — RESOLVED.** School-plan dual-encryption confirmed, with school-key copies stored in a Drive location the _school admin_ owns (Shared Drive preferred, folder fallback) rather than in individual teachers' Drives, for institutional-continuity reasons. Full access-grant mechanism (Google Picker requirement, teacher-removal handling) documented in the ADR.
 3. **§7, FR-SCAN-06 — DEFERRED TO BACKLOG.** Offline-first scanning approved as a concept but explicitly not in v1 scope; do not build against it until it's pulled off the backlog into a milestone.
 4. **§11 — STILL OPEN, non-blocking.** Recommended network-layer hardening on the admin subdomain beyond the spec's 2FA baseline has not been explicitly confirmed or declined. Tracked as task M7-007; revisit when M7 is reached.
 

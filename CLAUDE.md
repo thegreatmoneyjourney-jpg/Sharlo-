@@ -8,13 +8,13 @@ Sharlo is a mobile-first SaaS web app that lets teachers grade multiple-choice b
 
 ## Where things are
 
-| Need to... | Go to |
-|---|---|
-| Understand a feature requirement or its acceptance criteria | `docs/SRS.md` — every requirement has an ID (`FR-*`, `NFR-*`) |
-| Understand how something is/should be built, the data model, the threat model | `docs/ARCHITECTURE.md` |
-| Understand *why* a technical decision was made | `docs/ADR/` — one file per decision |
-| Find the next thing to work on | `docs/TASKS.md` — milestones M0–M7, task IDs, dependencies, "done when" criteria |
-| Write up completed work | `docs/reports/<task-id>.md` — one file per completed task, see format below |
+| Need to...                                                                    | Go to                                                                            |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Understand a feature requirement or its acceptance criteria                   | `docs/SRS.md` — every requirement has an ID (`FR-*`, `NFR-*`)                    |
+| Understand how something is/should be built, the data model, the threat model | `docs/ARCHITECTURE.md`                                                           |
+| Understand _why_ a technical decision was made                                | `docs/ADR/` — one file per decision                                              |
+| Find the next thing to work on                                                | `docs/TASKS.md` — milestones M0–M7, task IDs, dependencies, "done when" criteria |
+| Write up completed work                                                       | `docs/reports/<task-id>.md` — one file per completed task, see format below      |
 
 **This repo's docs are the source of truth for scope.** If you find yourself about to build something not traceable to a requirement ID, or about to skip/simplify something that is, stop and flag it in a report instead of deciding unilaterally — see "Stop conditions" below.
 
@@ -50,6 +50,7 @@ If a future report changes any of the above, update it here too — this file sh
 ## Stop conditions — flag, don't guess
 
 Stop and clearly flag at the top of the relevant `docs/reports/<task-id>.md` (rather than proceeding on a guess) when:
+
 - A task requires touching plaintext student data on the server side to work as described — that almost certainly means the feature needs a different design, not an exception to the rule.
 - Scope seems ambiguous, contradictory, or like it should move between in-scope/out-of-scope (kickoff prompt's own rule: don't silently drop or add scope).
 - A task is blocked on one of the open ADRs above and hasn't been confirmed yet.
@@ -58,6 +59,7 @@ Stop and clearly flag at the top of the relevant `docs/reports/<task-id>.md` (ra
 ## Report format (`docs/reports/<task-id>.md`)
 
 For every completed task, write one report file covering:
+
 1. **Flags first** (if any) — anything blocked, ambiguous, or deviating from the task's original description, and why. If nothing to flag, say so explicitly rather than omitting the section.
 2. What was built.
 3. Key decisions made along the way.

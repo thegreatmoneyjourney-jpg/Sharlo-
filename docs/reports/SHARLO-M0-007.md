@@ -9,7 +9,8 @@
 `docs/ADR/0005-client-side-encryption-key-management.md` is now **Accepted**. Nothing changed about the crypto design itself — you confirmed it as proposed.
 
 What I added for the reminder requirement: this needed a real mechanism, not just a note, so:
-- Signup keeps its existing hard gate (can't finish signup without clicking through Recovery Key confirmation) — but that's now explicitly documented as a *soft* signal, because a click-through isn't proof of anything 30 days later.
+
+- Signup keeps its existing hard gate (can't finish signup without clicking through Recovery Key confirmation) — but that's now explicitly documented as a _soft_ signal, because a click-through isn't proof of anything 30 days later.
 - New fields on `users`: `recovery_key_issued_at`, `recovery_key_reminder_7d_sent_at`, `recovery_key_reminder_30d_sent_at`, `recovery_key_reminder_dismissed_at`.
 - A daily scheduled job sends both an in-app banner and an email at the 7-day and 30-day marks, to any account that hasn't explicitly re-confirmed. "Re-confirm" requires actually re-downloading the key and clicking a real confirmation — dismissing the banner with the X doesn't count and the reminder comes back.
 - This pulled in a new piece of infrastructure that didn't exist in the plan before: **transactional email.** New `docs/ADR/0011-transactional-email-provider.md` recommends **Resend** (simple, good free tier, solid deliverability, natural fit for the rest of this stack) over Amazon SES (cheaper at real scale, but needs an AWS production-access approval and more setup friction than is justified pre-launch) or Postmark (fine, just no edge over Resend here). New task `M0-008` covers the domain email auth (DKIM/SPF/DMARC) setup; `M3-004` now depends on it.
@@ -33,12 +34,12 @@ You asked for researched numbers before locking launch pricing. Here's what I fo
 
 ### What the data actually shows
 
-| Market | Typical teacher pay (USD/yr equivalent) | Notes |
-|---|---|---|
-| US (Tier 1 anchor) | **$74,495** average, $46,526 starting | NEA 2024–25 Benchmark Report. Taxed; teacher pays own housing. |
-| UAE | **~$33,000–72,000** typical range (international/private-school teachers); up to ~$98,000 at top international schools | Tax-free, frequently + housing allowance. Public-sector (Emirati-national-facing) schools aren't really part of Sharlo's addressable market. |
-| Saudi Arabia | **~$32,000–48,000** typical for international-school teachers; **~$40,500** broad blended average (incl. local-curriculum teachers) | Tax-free. |
-| Qatar | **~$26,000–60,000** typical (mid-to-top private schools); **~$38,200** broad blended average; independent/public-school teachers start **~$65,000** with allowances | Tax-free. |
+| Market             | Typical teacher pay (USD/yr equivalent)                                                                                                                             | Notes                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| US (Tier 1 anchor) | **$74,495** average, $46,526 starting                                                                                                                               | NEA 2024–25 Benchmark Report. Taxed; teacher pays own housing.                                                                               |
+| UAE                | **~$33,000–72,000** typical range (international/private-school teachers); up to ~$98,000 at top international schools                                              | Tax-free, frequently + housing allowance. Public-sector (Emirati-national-facing) schools aren't really part of Sharlo's addressable market. |
+| Saudi Arabia       | **~$32,000–48,000** typical for international-school teachers; **~$40,500** broad blended average (incl. local-curriculum teachers)                                 | Tax-free.                                                                                                                                    |
+| Qatar              | **~$26,000–60,000** typical (mid-to-top private schools); **~$38,200** broad blended average; independent/public-school teachers start **~$65,000** with allowances | Tax-free.                                                                                                                                    |
 
 The broad-average figures for Saudi (~$40,500) and Qatar (~$38,200) — which I think are the more realistic proxy for who actually signs up for a cheap self-serve tool via SEO, as opposed to the top-tier international-school segment — sit at roughly **50–55% of the US anchor figure**, not close enough to justify Tier-1 parity on pure purchasing-power grounds. UAE's typical range is wide (~45–95% of the US figure depending on school tier), reflecting a real bifurcation: well-paid Western-curriculum international-school teachers at the top, and a much larger population of budget-private-school and local-curriculum teachers below them.
 

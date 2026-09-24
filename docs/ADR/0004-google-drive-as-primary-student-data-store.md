@@ -18,7 +18,7 @@ All student/exam content (results, rosters, answer keys) is client-side AES-256 
 
 ## Consequences
 
-- Multi-tenant data isolation for the highest-sensitivity data is largely free — it's enforced by Google's own account boundaries, not just our application logic (though Postgres RLS, ADR-0008, still protects everything that *does* live in our database).
+- Multi-tenant data isolation for the highest-sensitivity data is largely free — it's enforced by Google's own account boundaries, not just our application logic (though Postgres RLS, ADR-0008, still protects everything that _does_ live in our database).
 - We depend on Drive API availability and quota behavior as a hard dependency for the Drive-mode path; local-only mode is a genuine fallback, not just a checkbox feature, and should be kept fully functional rather than a second-class path.
 - Data portability is a natural byproduct: a teacher's data is files in their own Drive (or an export they hold themselves), not something they need to request an export from us to get.
 - This forecloses building any future feature that requires our backend to bulk-analyze student data across teachers (e.g., cross-school benchmarking) without a deliberate, explicit re-architecture and almost certainly re-consent — worth knowing now so it isn't assumed to be an easy add later.
