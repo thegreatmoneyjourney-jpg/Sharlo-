@@ -72,9 +72,13 @@ Top-level structure — **corrected during M0 scaffolding** from an earlier sing
       /(app)                -- authenticated teacher app (mostly client components)
         /scan                -- live camera + auto-capture flow
         /exams/[id]/review    -- Review Needed queue
-        /exams/[id]/results   -- results table + analytics
-        /templates             -- template library + custom template builder
-        /settings              -- account, encryption passphrase, recovery key, billing
+        /exams/[id]/results   -- results table + analytics + FR-ANALYTICS
+        /exams/[id]/import     -- FR-IMPORT: manual import, column mapping, validation
+        /classes                -- FR-ATTEND: class management + daily/exam-day attendance
+        /templates                -- template library + custom template builder
+        /settings                 -- account, encryption passphrase, recovery key, billing
+      /(publish)             -- FR-PUBLISH: public STRAI check page — the one route tree
+                                  that's intentionally NOT behind auth, see §7a
       /(school)              -- principal/school-admin views
       /(admin)               -- separate deployment target / subdomain, see §11
     /lib
@@ -83,16 +87,23 @@ Top-level structure — **corrected during M0 scaffolding** from an earlier sing
       /drive                  -- Drive file CRUD (browser-direct, no backend proxy)
       /local-store             -- IndexedDB adapter for local-only mode
       /billing                 -- entitlement checks, plan/usage helpers
+      /results-grid             -- FR-IMPORT-06: the ONE editable-grid component, used by
+                                    both /exams/[id]/results and /exams/[id]/import — never
+                                    forked into two implementations
   /api                     -- Fastify app (npm workspace "api")
     /src
-      /routes                 -- accounts, billing, admin, usage counters (§5)
+      /routes                 -- accounts, billing, admin, usage counters (§5),
+                                  public-results publish + lookup (§7a, the only
+                                  unauthenticated routes in this app)
       /db                       -- Drizzle schema + migrations
+      /payments                  -- Paddle + Bank Alfalah adapters behind one interface
 /infra                    -- Caddyfile, deployment docs (M0-005) — not a workspace, no app code
 docker-compose.yml         -- Postgres + api + web + Caddy, one VPS, per §12
-      /payments                 -- Paddle + Bank Alfalah adapters behind one interface
 ```
 
 The scanning, crypto, and Drive modules are deliberately framework-agnostic (plain TypeScript) so they're independently unit-testable without a browser/DOM, and so the core IP of the product (the detection pipeline) isn't tangled with UI code. As the admin panel (§11) grows, it may warrant becoming its own workspace (`apps/admin`) rather than a route group inside `web` — deferred until M5, not decided now.
+
+`/lib/results-grid` (Addendum 2) is deliberately one component with two call sites, not two components — `FR-IMPORT-06` states this as a requirement, not a suggestion: a fix or accessibility improvement made reviewing scanned results should benefit the import-correction flow for free, and vice versa, because it's the same code.
 
 ---
 
@@ -203,6 +214,9 @@ country_tier_map (
 )
 
 -- Usage / entitlement enforcement (see NFR-SEC-07)
+-- period_start semantics changed 2026-09-24 (Addendum 2): weekly (every Monday
+-- 00:00 UTC), was monthly — column/table unchanged, only what `period_start`
+-- represents changes. See FR-BILLING-06.
 usage_counters (
   user_id uuid references users(id), period_start date,
   sheets_scanned int default 0,
@@ -212,6 +226,24 @@ usage_counters (
 -- Account lifecycle / reminders (non-sensitive, account-level only — see ADR-0005 addendum)
 -- added to `users`: recovery_key_issued_at, recovery_key_reminder_7d_sent_at,
 -- recovery_key_reminder_30d_sent_at, recovery_key_reminder_dismissed_at (all nullable timestamptz)
+
+-- Result-card / public-announcement branding (Addendum 2, FR-ANALYTICS-05, FR-PUBLISH-06)
+-- added to `users`: branding jsonb null -- {schoolName, logoUrl, colorTheme}, non-sensitive,
+-- configured once per account, applied to every report card / announcement that account produces.
+-- Per-account (not automatically unified across a school's teachers) per the founder's literal
+-- "applied to every result card from THAT account" wording -- flagged as a possible later
+-- enhancement (shared school-wide branding) rather than assumed now.
+
+-- Misc admin-configurable operational parameters that don't fit pricing_tiers or feature_flags'
+-- on/off shape -- e.g. STRAI ID expiry window (FR-PUBLISH-05), public-lookup rate-limit/CAPTCHA
+-- thresholds (NFR-SEC-14). New table rather than overloading feature_flags, since these are
+-- values, not flags, and this list will likely grow.
+app_config (
+  key text primary key, value jsonb, description text,
+  updated_at, updated_by uuid references users(id)
+)
+-- seeded: ('public_result_ttl_days', '30', 'STRAI ID expiry window, FR-PUBLISH-05')
+-- seeded: ('entitlement_cache_max_age_hours', '24', 'Client entitlement-cache freshness window, ADR-0015')
 
 -- Non-sensitive templates
 templates (
@@ -228,9 +260,21 @@ admin_audit_log (
   action_type text, target_type text, target_id text,
   metadata jsonb, ip_address inet, created_at
 )
+
+-- Addendum 2, FR-PUBLISH-* — the ONE deliberate exception to "no student data
+-- lives here." Full design, why it's safe, and why it's the only one: §7a.
+public_results (
+  id uuid pk,
+  strai_id text unique not null, -- the capability token itself; see ADR-0012 for entropy/encoding
+  owner_user_id uuid references users(id), -- for account-deletion cascade (FR-PUBLISH-09), never used for lookup
+  student_name text not null, roll_number text not null, marks jsonb not null, grade text,
+  -- exactly the FR-PUBLISH-01 field set. No phone numbers, no other roster fields, ever.
+  expires_at timestamptz not null, -- from app_config.public_result_ttl_days at creation time
+  created_at timestamptz not null default now()
+)
 ```
 
-Notably **absent:** any table for exams, exam results, student names, roll numbers, or answer keys. That data has no reason to exist on our servers at all — see §7.
+Notably **absent:** any table for exams, exam results, student names, roll numbers, or answer keys — except the one explicit, narrow exception above. That data has no reason to exist on our servers at all — see §7 and §7a.
 
 ---
 
@@ -241,7 +285,8 @@ Every exam, answer key, roster, and result set is a single JSON document with th
 ```json
 {
   "schemaVersion": 1,
-  "type": "examResults", // or "examKey", "roster", "template" (custom)
+  "type": "examResults", // or "examKey", "roster", "template" (custom),
+  // "class", "attendance" (Addendum 2, FR-ATTEND-*)
   "recordId": "‹random uuid, non-identifying›",
   "iv": "‹base64›",
   "ciphertext": "‹base64, AES-256-GCM over the actual content›",
@@ -252,7 +297,29 @@ Every exam, answer key, roster, and result set is a single JSON document with th
 - **Drive mode:** this JSON is written directly from the browser to the teacher's Google Drive via the Drive API, using the `drive.file` scope and the teacher's own OAuth access token. The backend is never in this request path — it doesn't proxy, doesn't see the payload, doesn't even get a webhook about it. Drive's own `appProperties` (unencrypted key/value metadata Drive allows per file, scoped to files our app created) is used to tag `type` and `recordId` so the app can list/find its own files via the Drive API without needing our backend to track file pointers at all.
 - **Local-only mode:** the same JSON envelope is written to IndexedDB instead of Drive. "Export backup file" downloads the raw envelope(s); "Import backup file" restores them — this also doubles as the cross-device migration path for local-only users.
 
-This is why the "servers can't read student data" property is structural rather than a promise: the plaintext never has a reason to touch a server-controlled system, encrypted or not. There is no decrypt endpoint to forget to lock down, because there is no endpoint at all.
+This is why the "servers can't read student data" property is structural rather than a promise: the plaintext never has a reason to touch a server-controlled system, encrypted or not. There is no decrypt endpoint to forget to lock down, because there is no endpoint at all — with the one narrow, explicit exception in §7a.
+
+**Envelope granularity, clarified for Addendum 2 (not a new design, a clarification an existing ambiguity needed once `FR-EXAMCFG-03`'s void-question recalc depended on it):** one `examResults` file = one exam, containing _all_ students' results for that exam as an array within it — not one file per student. Void/partial-credit recalculation (`FR-EXAMCFG-03`) is a single read-recompute-write of that one file, not N round-trips for a class of N. `attendance` follows the same reasoning at a different grain: one file per class _per month_ (not per day), so a monthly report (`FR-ATTEND-04`) is one Drive read, not ~30.
+
+---
+
+## 7a. The one exception: Public Result Announcement (Addendum 2, `FR-PUBLISH-*`)
+
+**Read this before touching any code near `FR-PUBLISH-*`.** Everything above this section, and everywhere else in this document, is built around one property: our backend never receives plaintext student data. This feature is a deliberate, narrow, opt-in exception to that property — not a loophole, not a slow erosion of it, a single explicit carve-out with its own table (§6's `public_results`), its own access model (below), and its own limits (auto-expiry, minimal fields, `NFR-SEC-13`/`14`). Nothing else in the product works this way, and nothing else should without going back to the founder the way this one did (`docs/reports/SHARLO-M0-009.md`).
+
+**Why it has to work this way:** every other feature's "reader" is the teacher, who's authenticated and holds the decryption key. A public result check is read by a student who has neither — no account, no key, nothing but a STRAI ID their teacher gave them. There's no cryptographic trick that lets an unauthenticated stranger decrypt a teacher-encrypted blob; the only honest options were (a) don't build this feature, or (b) let the teacher explicitly, per-exam, opt into publishing a minimal plaintext subset for exactly this purpose. The founder chose (b) — `FR-PUBLISH-01`'s "explicit, opt-in, per-exam" framing is the whole safety model, not a nice-to-have detail.
+
+**Access model — capability token, not tenant RLS:** `public_results` has no `user_id`-based Postgres RLS policy in the sense §8 describes for everything else, because there's no authenticated "current user" for this endpoint at all — the requester is anonymous. Instead, the STRAI ID **is** the access credential (the same pattern as an unguessable share-link): possession of a valid STRAI ID plus the matching roll number is the only thing that authorizes reading one row. This holds up only because of `NFR-SEC-13`'s entropy requirement — the token has to be as unguessable as a real credential, because it's functioning as one. The lookup path is deliberately the _only_ code path that ever queries this table (one function, `(straiId, rollNumber) → one row or nothing`), so there's no other query surface to accidentally get a `WHERE` clause wrong on.
+
+**What's still true here, just enforced differently:**
+
+- _Fails closed:_ an invalid STRAI ID, a non-matching roll number, and an expired STRAI ID (`FR-PUBLISH-05`) all return the identical generic "not found" (`FR-PUBLISH-03`) — never distinguishable, so a wrong guess never tells an attacker which half was wrong.
+- _Minimum necessary data:_ exactly four fields (`FR-PUBLISH-01`), enforced by the publish payload's own type, not just a description of intent.
+- _Time-limited:_ every row has an `expires_at`; nothing published sits here indefinitely (`app_config.public_result_ttl_days`).
+- _Deletable:_ cascades on the owning teacher's account deletion (`FR-PUBLISH-09`) — the one place in the system where "delete all my data" has to reach into a table that isn't tenant-RLS-scoped the normal way, called out explicitly so it doesn't get missed.
+- _Rate-limited and CAPTCHA'd_ (`NFR-SEC-14`) — the STRAI ID is unguessable, but the roll-number half of the pair is not (small integer space), so the defense against "attacker has a valid STRAI ID and brute-forces roll numbers" is rate limiting, not entropy.
+
+See `ADR-0012` for the full alternatives-considered writeup, including the narrower aggregates-only option that was on the table and not chosen.
 
 ---
 
@@ -264,6 +331,7 @@ Because student _content_ never reaches Postgres, the isolation surface there is
 - **Postgres Row-Level Security (RLS)** policies enforce `user_id = current_setting('app.current_user_id')` (or the equivalent school-scoped check) on every tenant table, set per-request by the API layer after authenticating the session. This is defense-in-depth on top of the application-layer query scoping — a bug in a handler's `WHERE` clause still can't cross tenants, because the database itself refuses.
 - The Fastify app role connects to Postgres with a restricted database role that has **no** `BYPASSRLS` privilege.
 - `admin_audit_log` has no `DELETE`/`UPDATE` grant to the application role at all — even a compromised app-layer session can't tamper with history, only a migration run under a separate privileged role could.
+- **`public_results` is explicitly not part of this pattern** — there's no authenticated tenant on the read path to scope by (§7a). Its isolation is the STRAI ID acting as a capability token, not `user_id`-based RLS. Don't add a `user_id = current_setting(...)` policy to it expecting it to behave like the tables above; it can't, because the requester making the read is never one of our authenticated users.
 
 ---
 
@@ -335,20 +403,23 @@ Also required:
 
 ## 13. Threat model
 
-| Threat                                                                         | Target                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cross-tenant data read (IDOR-style)                                            | Another teacher's/school's Postgres rows                                                          | RLS policies (§8) as a hard backstop under app-layer scoping; every query path tested for tenant-scoping.                                                                                                                                                                                                                          |
-| Server compromise / DB dump                                                    | Student PII                                                                                       | Structurally absent from Postgres — an attacker who dumps the DB gets ciphertext blobs (wrapped keys) and account metadata, never student content. This is the single biggest payoff of the §7 design.                                                                                                                             |
-| Admin panel compromise (stolen admin credential)                               | Full user/billing control, no student data (see §11)                                              | 2FA/passkey, audit log, recommended network-layer hardening (§11), least-privilege DB role for the app.                                                                                                                                                                                                                            |
-| Payment webhook spoofing                                                       | Fraudulent plan upgrades / fake refunds                                                           | Signature verification on every webhook (NFR-SEC-11), idempotency via `provider_event_id`.                                                                                                                                                                                                                                         |
-| OAuth token theft (XSS or device compromise)                                   | Teacher's Drive files created by our app                                                          | `drive.file` scope limits blast radius to app-created files only, never the teacher's whole Drive; session cookies httpOnly to resist XSS token theft; short-lived access tokens, refreshed via Google's normal OAuth refresh flow.                                                                                                |
-| XSS in the results table (student names rendered back into the UI)             | Session/token theft, UI manipulation                                                              | React's default escaping + CSP headers; no `dangerouslySetInnerHTML` on any student-data-derived field.                                                                                                                                                                                                                            |
-| CSV/formula injection on export                                                | Whoever opens the exported file in Excel/Sheets                                                   | Cell-value sanitization for leading `= + - @` (NFR-SEC-06) — an easy-to-miss class explicitly called out in the SRS.                                                                                                                                                                                                               |
-| Free-tier quota bypass via client tampering                                    | Revenue (minor)                                                                                   | Accepted risk, soft enforcement (NFR-SEC-07) — not worth DRM-style engineering at this price point; monitored via anomaly patterns (e.g., heavy usage with zero counter syncs) rather than prevented outright.                                                                                                                     |
-| Malicious/oversized image upload (custom template photo, batch scanner import) | Availability, storage abuse                                                                       | Client-side size/type validation for UX; backend-side limits on anything that does transit the server (template geometry payloads, not images themselves — see §6, images for custom templates are processed to geometry client-side and only the derived geometry may be persisted); rate limiting on all endpoints (NFR-SEC-04). |
-| Forgotten Encryption Passphrase + lost Recovery Key                            | Permanent, unrecoverable data loss for that teacher (by design of true zero-knowledge encryption) | Explicit, unmissable UX warning at Recovery Key issuance (FR-AUTH-08); this is a real product-support-burden risk worth the founder's awareness, not just an engineering footnote — flagged again in the M0 report.                                                                                                                |
-| Supply-chain (compromised npm dependency)                                      | Full app compromise                                                                               | Pinned versions + lockfile committed (required by kickoff prompt), automated dependency vulnerability scanning in CI (NFR-SEC-10).                                                                                                                                                                                                 |
-| Google OAuth app verification lapse/rejection                                  | Auth flow breaks for all users                                                                    | Verification prep (privacy policy, domain ownership, branding, demo video) tracked as an explicit, launch-blocking M3 task, not an afterthought.                                                                                                                                                                                   |
+| Threat                                                                                              | Target                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cross-tenant data read (IDOR-style)                                                                 | Another teacher's/school's Postgres rows                                                          | RLS policies (§8) as a hard backstop under app-layer scoping; every query path tested for tenant-scoping.                                                                                                                                                                                                                          |
+| Server compromise / DB dump                                                                         | Student PII                                                                                       | Structurally absent from Postgres — an attacker who dumps the DB gets ciphertext blobs (wrapped keys) and account metadata, never student content. This is the single biggest payoff of the §7 design.                                                                                                                             |
+| Admin panel compromise (stolen admin credential)                                                    | Full user/billing control, no student data (see §11)                                              | 2FA/passkey, audit log, recommended network-layer hardening (§11), least-privilege DB role for the app.                                                                                                                                                                                                                            |
+| Payment webhook spoofing                                                                            | Fraudulent plan upgrades / fake refunds                                                           | Signature verification on every webhook (NFR-SEC-11), idempotency via `provider_event_id`.                                                                                                                                                                                                                                         |
+| OAuth token theft (XSS or device compromise)                                                        | Teacher's Drive files created by our app                                                          | `drive.file` scope limits blast radius to app-created files only, never the teacher's whole Drive; session cookies httpOnly to resist XSS token theft; short-lived access tokens, refreshed via Google's normal OAuth refresh flow.                                                                                                |
+| XSS in the results table (student names rendered back into the UI)                                  | Session/token theft, UI manipulation                                                              | React's default escaping + CSP headers; no `dangerouslySetInnerHTML` on any student-data-derived field.                                                                                                                                                                                                                            |
+| CSV/formula injection on export                                                                     | Whoever opens the exported file in Excel/Sheets                                                   | Cell-value sanitization for leading `= + - @` (NFR-SEC-06) — an easy-to-miss class explicitly called out in the SRS.                                                                                                                                                                                                               |
+| Free-tier quota bypass via client tampering                                                         | Revenue (minor)                                                                                   | Accepted risk, soft enforcement (NFR-SEC-07) — not worth DRM-style engineering at this price point; monitored via anomaly patterns (e.g., heavy usage with zero counter syncs) rather than prevented outright.                                                                                                                     |
+| Malicious/oversized image upload (custom template photo, batch scanner import)                      | Availability, storage abuse                                                                       | Client-side size/type validation for UX; backend-side limits on anything that does transit the server (template geometry payloads, not images themselves — see §6, images for custom templates are processed to geometry client-side and only the derived geometry may be persisted); rate limiting on all endpoints (NFR-SEC-04). |
+| Forgotten Encryption Passphrase + lost Recovery Key                                                 | Permanent, unrecoverable data loss for that teacher (by design of true zero-knowledge encryption) | Explicit, unmissable UX warning at Recovery Key issuance (FR-AUTH-08); this is a real product-support-burden risk worth the founder's awareness, not just an engineering footnote — flagged again in the M0 report.                                                                                                                |
+| Supply-chain (compromised npm dependency)                                                           | Full app compromise                                                                               | Pinned versions + lockfile committed (required by kickoff prompt), automated dependency vulnerability scanning in CI (NFR-SEC-10).                                                                                                                                                                                                 |
+| Google OAuth app verification lapse/rejection                                                       | Auth flow breaks for all users                                                                    | Verification prep (privacy policy, domain ownership, branding, demo video) tracked as an explicit, launch-blocking M3 task, not an afterthought.                                                                                                                                                                                   |
+| STRAI ID brute-force / enumeration (Addendum 2)                                                     | A published exam's student results                                                                | 128-bit-plus entropy (NFR-SEC-13) makes the ID itself infeasible to guess; rate limiting + CAPTCHA (NFR-SEC-14) bound the roll-number-guessing side of the attack even _with_ a valid ID; generic not-found responses (§7a) prevent using error differences to narrow the search.                                                  |
+| STRAI ID leak via referrer/logs/screenshot (it's a bearer credential by design)                     | Same as above, for exactly that one exam's published results, never more                          | Blast radius is deliberately capped: one STRAI ID exposes one exam's minimal published fields, nothing else, and expires automatically (`app_config.public_result_ttl_days`) — the exception's narrowness (§7a) _is_ the mitigation here, not a separate control.                                                                  |
+| Public-results endpoint used to enumerate valid vs. invalid STRAI IDs at scale (availability/recon) | Confirming which announcements exist                                                              | Same rate limiting/CAPTCHA as above (NFR-SEC-14) — this is the standard mitigation for a capability-token design, not a gap specific to this feature.                                                                                                                                                                              |
 
 ---
 
@@ -361,11 +432,14 @@ Also required:
 
 ## 15. Architecture decisions — resolution log
 
-(Full context lives in `docs/reports/SHARLO-M0-001.md` and `docs/reports/SHARLO-M0-007.md`; summarized here for architectural completeness. This section used to be phrased as open questions — all but one are now resolved.)
+(Full context lives in `docs/reports/SHARLO-M0-001.md`, `docs/reports/SHARLO-M0-007.md`, and `docs/reports/SHARLO-M0-009.md`; summarized here for architectural completeness. This section used to be phrased as open questions — all but two are now resolved.)
 
 1. **§9 / ADR-0005 — RESOLVED.** Encryption Passphrase confirmed as the resolution to the "password-derived wrap key" requirement. Founder additionally required the proactive Recovery Key reminder cadence now in the ADR-0005 addendum, which is what pulled transactional email (ADR-0011) into the architecture.
 2. **§6, §7, §10, ADR-0010 — RESOLVED.** School-plan dual-encryption confirmed, with school-key copies stored in a Drive location the _school admin_ owns (Shared Drive preferred, folder fallback) rather than in individual teachers' Drives, for institutional-continuity reasons. Full access-grant mechanism (Google Picker requirement, teacher-removal handling) documented in the ADR.
 3. **§7, FR-SCAN-06 — DEFERRED TO BACKLOG.** Offline-first scanning approved as a concept but explicitly not in v1 scope; do not build against it until it's pulled off the backlog into a milestone.
 4. **§11 — STILL OPEN, non-blocking.** Recommended network-layer hardening on the admin subdomain beyond the spec's 2FA baseline has not been explicitly confirmed or declined. Tracked as task M7-007; revisit when M7 is reached.
+5. **Gulf PPP pricing — RESOLVED, confirmed 2026-09-24.** Seed table now in `docs/SRS.md` §5.9a.
+6. **§6, §7a, ADR-0012 (Public Result Announcement) — RESOLVED, confirmed 2026-09-24 (Addendum 2), including the storage/access-model design.** The one deliberate exception to the zero-server-plaintext architecture; full design in §7a.
+7. **`docs/SRS.md` NFR-SEC-12 (Free-tier gating given the client-side architecture) — RESOLVED, confirmed.** Server-sourced entitlement as source of truth, real rejection wherever a server endpoint genuinely exists; founder explicitly declined moving computation server-side to get stronger enforcement (the privacy model, `ADR-0001`, isn't a trade-off target). Founder added one refinement: the entitlement fetch caches locally with a bounded freshness window (~24h default) and tolerates offline use, re-validating on reconnect rather than requiring a live round-trip per check — full design in `ADR-0015`, written specifically so `BACKLOG-001` (offline-first scanning) has this already figured out whenever it's built.
 
-Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`.
+Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Nothing in this numbered list is still open as of this round — the one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of Addendum 1 or 2's decisions.

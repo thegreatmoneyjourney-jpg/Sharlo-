@@ -54,6 +54,15 @@ If a future report changes any of the above, update it here too — this file sh
 - What's fine, and how this session has actually been operating: pushing a fix commit to an already-open PR after a real, diagnosed failure, then merging once the new head commit is verified green. That's "investigate and fix the root cause," not "retry until green" — the distinction is whether you changed something you understand to be the actual cause, versus just hoping. If a PR's history contains an earlier red commit that a later commit on the _same_ PR fixed and CI re-verified, the report for that task says so explicitly rather than presenting the PR as having been clean throughout — the rule is about the state you merge on, not a demand to rewrite history, but it's never silently glossed over either.
 - Before treating any task as done, confirm via the actual GitHub check-run data for that PR's current head commit — not memory, not "it looked right." `docs/reports/SHARLO-M0-CI-AUDIT.md` has the first full audit under this rule (2026-09-24) as a worked example of what "confirmed" means in practice.
 
+### Standing rule: commit atomicity and push integrity (founder-confirmed, added 2026-09-24)
+
+Extends the rules above to cover the commit/push mechanics themselves, not just check results — from recurring "workflow didn't complete cleanly" and "only part of a change actually landed" problems on other projects.
+
+- **Every commit must be atomic and complete.** Never push a commit that's a half-finished change — a migration without the code that uses it, a component split across commits where the first one alone breaks the app. If a change is genuinely too large for one commit, every individual commit in the sequence must still leave the repo working and CI-passing on its own, not just the final commit in the sequence.
+- **After every push, verify it actually landed** — don't infer success just because the `git push` command didn't error. `git fetch origin <branch>` then confirm `git rev-parse HEAD` matches `git rev-parse origin/<branch>` (or equivalently, that `git log origin/<branch>..HEAD` is empty) before treating the push as done.
+- **A GitHub Actions run that doesn't reach a clear pass/fail — times out, gets cancelled, ends in any indeterminate state — is treated exactly like a failing check.** Don't proceed on it, don't interpret "didn't finish" as "probably fine." Investigate why it didn't complete and re-run or fix as needed.
+- Keep watching every push to completion (the existing CI rule above) — this doesn't replace that, it extends the same discipline to cover the commit/push step itself, not only the check results once CI starts.
+
 ## Stop conditions — flag, don't guess
 
 Stop and clearly flag at the top of the relevant `docs/reports/<task-id>.md` (rather than proceeding on a guess) when:
