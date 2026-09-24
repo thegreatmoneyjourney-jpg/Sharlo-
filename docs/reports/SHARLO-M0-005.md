@@ -37,4 +37,4 @@ Not testable at all until there's a real VPS, CI or no CI: an actual `docker com
 
 ## Status
 
-Config-as-code done pending CI attempt 2's result. If green: both Docker images are proven to actually build from a clean checkout (not just "the Dockerfile reads correctly"), and `docs/TASKS.md` gets marked accordingly. Live deployment remains blocked on the founder's Hetzner account regardless.
+**CI attempt 2 came back green — both checks, `Lint, typecheck, test` and `Docker images build` (PR #8, merged).** Both Docker images are now proven to actually build from a clean checkout, not just "the Dockerfile reads correctly." Config-as-code is done. Live deployment remains blocked on the founder's Hetzner account, as already acknowledged.
