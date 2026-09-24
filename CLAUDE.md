@@ -30,12 +30,13 @@ Sharlo is a mobile-first SaaS web app that lets teachers grade multiple-choice b
 - **Never auto-guess an ambiguous bubble mark.** Flag it to the Review Queue instead. This is the product's core trust guarantee (NFR-ACC-03) — a regression here is a product-integrity bug, treat it as a high-severity one.
 - **CSV/Excel exports must sanitize cells starting with `= + - @`** (formula-injection). Easy to forget, explicitly called out in NFR-SEC-06 — don't reintroduce this if refactoring export code.
 
-## Two decisions are still open — check before building on them
+## Decisions log
 
-- **ADR-0005** (Encryption Passphrase + Recovery Key wrapping a master key) — proposed resolution to a real contradiction in the original spec (Google-only auth has no "account password" to derive a key from). Needs founder confirmation before M3 encryption tasks (M3-003 onward) start. If it's confirmed, update this file's status line for it to "Accepted" and remove this caveat.
-- **ADR-0010** (School-plan dual-encryption for principal dashboards) — a genuinely new mechanism, not in the original spec, needed to make "school-wide results" possible without breaking "servers can't read student data." Needs founder confirmation before M3-014/015/016 and any School-plan work in M4/M5. Individual teacher (Free/Pro) work is not blocked by this.
+- **ADR-0005** (Encryption Passphrase + Recovery Key) and **ADR-0010** (School-plan dual-encryption, school-admin-owned Drive storage) are both **Accepted** — confirmed by the founder in `docs/reports/SHARLO-M0-007.md`. Nothing in M1–M4 is decision-blocked. ADR-0005 gained an addendum (proactive 7-day/30-day Recovery Key reminders, email + in-app — see FR-AUTH-09, ADR-0011) and ADR-0010 gained a concrete storage mechanism (Shared Drive preferred, folder fallback, Google Picker access-grant flow) — read both ADRs in full before touching auth/encryption or School-plan code, the summaries above aren't enough to implement against.
+- **Still open, non-blocking:** admin-subdomain network-layer hardening beyond the spec's 2FA baseline (`docs/ARCHITECTURE.md` §11, task M7-007) — not yet confirmed or declined by the founder. Not needed until M7.
+- **Pending a number, not a design:** UAE/Saudi/Qatar pricing-tier placement — research and a recommendation are in `docs/reports/SHARLO-M0-007.md`; the founder hasn't locked final numbers yet. Since pricing is admin-configurable at runtime (non-negotiable above), this never blocks engineering work — just don't treat the SRS's Tier-1 seed values for those three countries as final when M4's pricing seed data is loaded.
 
-Check `docs/reports/SHARLO-M0-001.md` for the founder's response if one has been pasted back into a later session — if confirmed/amended there, treat that as the current answer over the ADR's "Proposed" status until the ADR file itself is updated to match.
+If a future report changes any of the above, update it here too — this file should always reflect the current state, not the history of how it got there (the reports are where history lives).
 
 ## CI / workflow rules
 

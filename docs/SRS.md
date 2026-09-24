@@ -88,6 +88,7 @@ Each requirement has an ID, a description, and acceptance criteria. IDs are refe
 | FR-AUTH-06 | Teacher can opt into **local-only mode** (no Google account) at signup instead. | All data stays in browser storage (IndexedDB); teacher is shown a persistent, unmissable warning about device-loss / browser-data-clearing risk; "Export backup file" / "Import backup file" are available from the first session. |
 | FR-AUTH-07 | Changing the Encryption Passphrase only re-wraps the master key. | Re-wrap operation completes without touching any existing encrypted exam/result records; verified by a test that changes the passphrase and confirms all prior data still decrypts. |
 | FR-AUTH-08 | Losing both the Encryption Passphrase and the Recovery Key means the data is unrecoverable — by design. | Documented plainly in the product UI (not just the privacy policy) at the point the Recovery Key is issued. |
+| FR-AUTH-09 | Beyond the signup-time confirmation (FR-AUTH-05), the app proactively re-prompts a teacher to re-verify their Recovery Key is safely saved at 7 days and 30 days after issuance, via both an in-app banner and email, until they explicitly re-confirm. **Founder-required, added after initial SRS draft — see `docs/reports/SHARLO-M0-007.md`.** | A test account with `recovery_key_reminder_dismissed_at` unset receives exactly one 7-day and one 30-day reminder (both channels), and no more after an explicit re-confirmation action (re-download + confirm, not a passive dismiss). See ADR-0005 addendum, ADR-0011. |
 
 ### 5.2 FR-EXAM — Exam creation
 
@@ -105,6 +106,18 @@ Each requirement has an ID, a description, and acceptance criteria. IDs are refe
 | FR-TPL-02 | Teacher can upload a photo of a custom/existing sheet and the system auto-generates a template (detected grid + corner markers) from it. | Teacher reviews and can manually adjust the detected grid (drag corners, add/remove rows/columns) before the template is used for scoring. We do **not** claim unattended 100% accuracy for custom templates anywhere in the product copy. |
 | FR-TPL-03 | Free plan is limited to Sharlo templates + 1 custom template; Pro/School are unlimited custom templates. | Enforced against the plan/entitlement record at template-creation time. |
 
+### 5.3a FR-SCHOOL — School plan & principal dashboard
+
+Added to close a traceability gap: the principal dashboard was described in §3 (roles) and designed in `docs/ADR/0010-school-plan-multi-recipient-encryption.md`, but hadn't been given its own requirement IDs. Backfilled here now that the design is confirmed (`docs/reports/SHARLO-M0-007.md`).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-SCHOOL-01 | School account creation generates a school key and a school-admin-owned Drive storage container (Shared Drive where the admin's Google account supports it, a shared folder otherwise). | See ADR-0010. Onboarding actively recommends a free Google Workspace for Education account when the admin is on a personal Google account, to get the stronger (Shared Drive) continuity guarantee. |
+| FR-SCHOOL-02 | Adding a teacher to a school grants them a wrapped copy of the school key and shares the school's Drive container with them; the teacher must complete a one-time Google Picker selection step before their results can dual-encrypt to the school. | Onboarding clearly explains the Picker step ("select the folder shared by your admin") — it's a required action, not assumed automatic. A teacher who skips it sees a clear, specific error/prompt on next finalize, not a silent failure. |
+| FR-SCHOOL-03 | On exam finalize, a teacher-under-school's client encrypts results to both their own key (personal view, unaffected) and the school key (written to the school's Drive container). | Verified by a test: a teacher-under-school's individual results view is identical in behavior to a non-school teacher's; the school-key copy independently decrypts in the admin's session. |
+| FR-SCHOOL-04 | Principal dashboard shows school-wide results, decrypted client-side in the admin's own browser from the school-key copies. | Our backend is never in the decrypt path — verified the same way as FR-ADMIN-11. |
+| FR-SCHOOL-05 | Removing a teacher from a school preserves the school's already-written historical data regardless of that teacher's account status afterward. | On the Shared Drive path, verified structurally (Shared Drive files are never teacher-owned). On the fallback folder path, verified by a test that ownership-transfer runs on removal, and product copy about this guarantee is worded to match which path applies (see ADR-0010's stated limitation — don't overclaim on the fallback path). |
+
 ### 5.4 FR-SCAN — Camera scanning & capture
 
 | ID | Requirement | Acceptance criteria |
@@ -114,7 +127,7 @@ Each requirement has an ID, a description, and acceptance criteria. IDs are refe
 | FR-SCAN-03 | On capture: audible beep + device vibration (where supported) confirms the capture, then the camera view immediately resets for the next sheet. | End-to-end from "sheet held steady" to "ready for next sheet" ≤2 seconds on the reference device class (see NFR-PERF-01). |
 | FR-SCAN-04 | A manual "Take Photo" button is always available as a fallback to auto-capture. | Required and tested specifically on iOS Safari, where camera API behavior is least consistent. |
 | FR-SCAN-05 | Batch import of scanner-produced images or PDFs (multiple sheets at once) is supported as an alternative to live scanning. | PDF is split page-by-page client-side; each page/image runs through the same detection pipeline as a live capture. |
-| FR-SCAN-06 | Scanning works with no network connection; only the final sync to Drive (or local save) may require connectivity, and that sync is queued if offline. | **[DECISION NEEDED — recommended addition, see report]** Manual QA: enable airplane mode mid-session, scan a full class, confirm zero data loss and successful sync once reconnected. |
+| FR-SCAN-06 | **BACKLOG — approved concept, explicitly deferred past launch, not in v1 scope.** Scanning works with no network connection; only the final sync to Drive (or local save) may require connectivity, and that sync is queued if offline. | Founder approved the idea but directed it to backlog for a later milestone rather than v1 (`docs/reports/SHARLO-M0-007.md`) — do not build against this until it's pulled off the backlog into a milestone. When it is: manual QA, enable airplane mode mid-session, scan a full class, confirm zero data loss and successful sync once reconnected. |
 
 ### 5.5 FR-DETECT — OMR detection engine
 
@@ -231,7 +244,7 @@ See `docs/ARCHITECTURE.md` §8–§11 for the full design and threat model. Requ
 | NFR-SEC-04 | Rate limiting and upload/input validation on all backend endpoints. |
 | NFR-SEC-05 | No student PII ever reaches server logs, crash reports, or analytics tooling — enforced by a scrubbing layer, not just "don't log it" convention, since accidental logging (e.g., logging a full request body on error) is one of the most common real-world PII leak vectors. |
 | NFR-SEC-06 | Export files (CSV/Excel) sanitize any cell value beginning with `=`, `+`, `-`, or `@` to prevent CSV/formula-injection attacks against Excel/Sheets. This is a real, frequently-missed vulnerability class and is explicitly in scope for FR-RESULTS-04. |
-| NFR-SEC-07 | Free-tier usage enforcement (FR-BILLING-06) is **soft**: client-reported counters with optimistic offline buffering and authoritative server reconciliation when online, not a hard per-scan gate (a hard gate would require a server round-trip before every capture, undermining the offline-first and zero-per-scan-server-dependency goals). Determined client-side tampering to bypass the free-tier cap is an accepted risk at this price point, consistent with how most freemium SaaS products treat client-enforced limits — not something to over-engineer DRM-style protection against. |
+| NFR-SEC-07 | Free-tier usage enforcement (FR-BILLING-06) is **soft**: client-reported counters with optimistic offline buffering and authoritative server reconciliation when online, not a hard per-scan gate (a hard gate would require a server round-trip before every capture, undermining the offline-first and zero-per-scan-server-dependency goals). Determined client-side tampering to bypass the free-tier cap is an accepted risk at this price point, consistent with how most freemium SaaS products treat client-enforced limits — not something to over-engineer DRM-style protection against. **Founder-confirmed refinement:** the cap is never enforced mid-scan or mid-session, even once the server-side count confirms it's exceeded — a teacher is never cut off partway through grading a class. The limit warning surfaces only at the *next* session start (app open) or on the dashboard, never as an interruption during active scanning (`docs/reports/SHARLO-M0-007.md`). |
 | NFR-SEC-08 | Signed, expiring URLs for any exports/downloads that transit our backend. |
 | NFR-SEC-09 | Admin panel requires 2FA/passkey; every admin action is authorized server-side and audit-logged (see FR-ADMIN-01/02). |
 | NFR-SEC-10 | Dependency versions pinned, lockfile committed, and automated dependency vulnerability scanning (e.g., `npm audit` / Dependabot/Renovate) wired into CI. |
@@ -282,14 +295,16 @@ Every task in `docs/TASKS.md` inherits this baseline Definition of Done in addit
 
 ---
 
-## 8. Key decisions needed from the founder
+## 8. Key decisions — status
 
-These are surfaced here for visibility; the full reasoning and recommended resolution for each lives in `docs/reports/SHARLO-M0-001.md` (read that first — it's short). Nothing below has been silently decided in a way that blocks your ability to override it.
+Originally surfaced as open questions; all resolved by the founder as of `docs/reports/SHARLO-M0-007.md`. Kept here as a log rather than deleted, since future sessions should be able to see what was decided and why without archaeology.
 
-1. **Master-key wrapping "by the account password"** — there is no account password in a Google-only auth flow. Recommended resolution: a separate Encryption Passphrase set at signup (FR-AUTH-04). **Needs your confirmation** — this is a core security-architecture decision, not a cosmetic one.
-2. **School plan's "school-wide results" dashboard** vs. "servers can never read student data" — if each teacher's data is encrypted only to that teacher's own key in that teacher's own Drive, a principal literally cannot see it. Recommended resolution: dual-encryption (student data encrypted to both the teacher's key and a school-level key) — see ADR-0010. **Needs your confirmation** before M3/School-plan work starts; does not block M1/M2.
-3. **Offline-first scanning** (FR-SCAN-06, NFR-REL-01) — not explicitly requested in the kickoff prompt, but recommended given real classroom Wi-Fi conditions. Low cost to build in from the start, high cost to retrofit later. Flagging so you can veto if it's not wanted.
-4. **PPP tier placement of a few countries** (e.g., UAE/Saudi/Qatar in Tier 1) is worth a second look given teacher salaries specifically (vs. general per-capita income) in those markets — not changed here since the admin panel makes it editable, but worth your eyes before launch pricing goes live.
+1. **Master-key wrapping "by the account password"** — **RESOLVED, CONFIRMED.** Encryption Passphrase, separate from Google login (FR-AUTH-04, ADR-0005, now Accepted). Founder additionally required a proactive Recovery Key reminder cadence (FR-AUTH-09) — accepted the permanent-data-loss risk of losing both the passphrase and Recovery Key as inherent to real zero-knowledge encryption, not something to engineer around.
+2. **School plan's "school-wide results" dashboard** — **RESOLVED, CONFIRMED.** Dual-encryption to both the teacher's key and a school key (ADR-0010, now Accepted), with the school-key copies stored in a Drive location the *school admin* owns (Shared Drive preferred, folder fallback) rather than in individual teachers' Drives — founder's explicit reasoning: institutional data continuity must not depend on any one teacher's account. See FR-SCHOOL-01–05.
+3. **Offline-first scanning** (FR-SCAN-06, NFR-REL-01) — **APPROVED AS A CONCEPT, DEFERRED.** Not in v1 launch scope; moved to backlog for a later milestone (`docs/TASKS.md`).
+4. **PPP tier placement of UAE/Saudi/Qatar** — **RESEARCHED.** See `docs/reports/SHARLO-M0-007.md` for sourced teacher-salary data and a recommended pricing split (institutional School pricing vs. individual Pro pricing) awaiting the founder's final numbers lock.
+
+**Still open, non-blocking:** the admin-subdomain network-layer hardening recommendation (`docs/ARCHITECTURE.md` §11, task M7-007) has not been explicitly addressed either way and remains a founder call whenever M7 is reached.
 
 ---
 

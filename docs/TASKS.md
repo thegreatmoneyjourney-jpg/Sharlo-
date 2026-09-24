@@ -22,6 +22,8 @@ Not in the kickoff prompt's milestone list (M1–M7) by name, but everything in 
 | M0-004 | Dependency pinning & SCA | Lockfile committed; Dependabot/Renovate (or equivalent) wired to flag vulnerable dependencies. | NFR-SEC-10 | A deliberately outdated/vulnerable test dependency triggers an alert in CI or a bot PR. |
 | M0-005 | VPS base infrastructure | Provision Hetzner VPS, Docker Compose skeleton (Postgres + Caddy + placeholder API container), domain/subdomain DNS layout (`app.`, `admin.`, apex marketing). | ARCHITECTURE.md §12 | `docker compose up` on the VPS serves a placeholder page over HTTPS on the intended domains. |
 | M0-006 | Drizzle schema skeleton + RLS pattern proof | Stand up the `users` table (minimal fields) with an RLS policy, and a test proving cross-tenant reads fail. | NFR-SEC-01, ADR-0008 | A test authenticated as tenant A cannot read a row seeded for tenant B, at the DB level (not just app-layer). |
+| M0-007 | Incorporate founder decisions (ADR-0005, ADR-0010) + Gulf pricing research | Update SRS/ARCHITECTURE/ADRs/TASKS to reflect confirmed decisions; research and report UAE/Saudi/Qatar teacher-salary data against Tier 1 seed pricing. | Governance — see `docs/reports/SHARLO-M0-007.md` | **Status: done, this session.** Report written; ADR-0005 and ADR-0010 moved to Accepted; ADR-0011 added; M3 School tasks unblocked. |
+| M0-008 | Transactional email provider setup (Resend) | Domain DKIM/SPF/DMARC config, Resend account/API key, a minimal in-process daily scheduler capable of driving the Recovery Key reminder job. | ADR-0011 | A test email sends successfully from the configured domain and lands in inbox (not spam) in a deliverability check. Blocks M3-004's reminder cadence. |
 
 ## M1 — Scanning Engine Core
 
@@ -36,8 +38,9 @@ Not in the kickoff prompt's milestone list (M1–M7) by name, but everything in 
 | M1-007 | Capture feedback (beep/vibration) + reset loop | Audible + haptic confirmation, camera resets for next sheet. | FR-SCAN-03 | End-to-end capture-to-ready ≤2s on reference device (NFR-PERF-01), measured, not estimated. |
 | M1-008 | Manual "Take Photo" fallback | Always-available manual capture button. | FR-SCAN-04 | Specifically tested on iOS Safari, where auto-capture reliability is expected to be weakest. |
 | M1-009 | Roll-number grid reading | Same bubble-reading technique applied to the roll-number block. | FR-DETECT-04 | Unmatched/unread roll numbers route to Review Queue, never silently dropped. |
-| M1-010 | Offline scanning capability | Full scan flow (capture → score → local queue) works with no network connection. | FR-SCAN-06, NFR-REL-01 — **recommended addition, confirm per report** | Manual QA: airplane mode for a full class scan session, zero data loss, successful sync on reconnect. |
-| M1-011 | Detection engine unit test harness | Reusable fixture-based test harness (sample sheet images with known ground truth) for M1-003 through M1-009. | NFR-ACC-01–04 | Test harness runs in CI headlessly (no real camera needed) against a checked-in fixture set. |
+| M1-010 | Detection engine unit test harness | Reusable fixture-based test harness (sample sheet images with known ground truth) for M1-003 through M1-009. | NFR-ACC-01–04 | Test harness runs in CI headlessly (no real camera needed) against a checked-in fixture set. |
+
+Offline scanning capability (originally sketched here as M1-010) was approved as a concept but explicitly deferred by the founder — see the **Backlog** section at the end of this document, not this milestone.
 
 ## M2 — Templates & Review Queue
 
@@ -55,14 +58,14 @@ Not in the kickoff prompt's milestone list (M1–M7) by name, but everything in 
 
 ## M3 — Accounts, Auth & Drive Sync
 
-`BLOCKED ON: ADR-0005` for anything touching master-key wrapping. `BLOCKED ON: ADR-0010` for School-plan-specific tasks only (marked below) — individual teacher tasks are not blocked.
+ADR-0005 and ADR-0010 are both **Accepted** (confirmed by the founder — see `docs/reports/SHARLO-M0-007.md`). No task in this milestone is blocked by an open decision anymore.
 
 | ID | Title | Description | Requirement(s) | Done when |
 |---|---|---|---|---|
 | M3-001 | Google OAuth redirect flow | PKCE redirect-based sign-in (not popup), requesting `openid email profile drive.file` only. | FR-AUTH-01, FR-AUTH-02, NFR-SEC-03 | Works on iOS Safari without popup-blocked failures; scope list matches exactly, enforced by the CI check in M3-011. |
 | M3-002 | Session management | httpOnly signed session cookie, Postgres-backed session store, CSRF protection. | ARCHITECTURE.md §9 | Session survives refresh; CSRF test confirms a cross-site POST is rejected. |
-| M3-003 | Master key generation & wrapping — `BLOCKED ON: ADR-0005` | Generate random master key at signup; Encryption Passphrase + Argon2id wrap; Recovery Key generation and second wrap. | FR-AUTH-03, FR-AUTH-04, FR-AUTH-05, FR-AUTH-07 | Test: sign up, change passphrase, confirm all prior encrypted data still decrypts without being touched. |
-| M3-004 | Recovery Key onboarding UX | Forced "I've saved my Recovery Key" confirmation; download/print option; unmissable "lose both = unrecoverable" messaging. | FR-AUTH-05, FR-AUTH-08 | Signup cannot complete without the explicit confirmation step. |
+| M3-003 | Master key generation & wrapping | Generate random master key at signup; Encryption Passphrase + Argon2id wrap; Recovery Key generation and second wrap. | FR-AUTH-03, FR-AUTH-04, FR-AUTH-05, FR-AUTH-07 | Test: sign up, change passphrase, confirm all prior encrypted data still decrypts without being touched. |
+| M3-004 | Recovery Key onboarding UX + reminder cadence | Forced "I've saved my Recovery Key" confirmation at signup; download/print option; unmissable "lose both = unrecoverable" messaging; **plus** the founder-required 7-day/30-day re-confirmation cadence (in-app banner + email) until explicitly re-confirmed. | FR-AUTH-05, FR-AUTH-08, FR-AUTH-09 | Signup cannot complete without the explicit confirmation step. Separately: a test account past the 7-day mark with no re-confirmation has received exactly one reminder email + shows the in-app banner; re-confirming (re-download + confirm) stops further reminders. Depends on M0-008 (email provider). |
 | M3-005 | Local-only mode | IndexedDB storage path, persistent data-loss-risk warning, Export/Import backup file. | FR-AUTH-06 | A local-only account can fully use the product with zero network calls to Drive; export/import round-trips correctly. |
 | M3-006 | Drive file CRUD (browser-direct) | Create/read/update the encrypted JSON envelope (`ARCHITECTURE.md` §7) directly from the browser to the teacher's Drive using `appProperties` tagging, with zero backend involvement in the request path. | ADR-0004 | Network inspection during a save confirms the request goes browser→Google directly, never through our API. |
 | M3-007 | Class list CSV upload & roll-number matching | Parse CSV client-side, store encrypted, match scanned roll numbers to roster entries. | FR-ROSTER-01, FR-ROSTER-02 | Unmatched roll numbers route to Review Queue (ties to M1-009). |
@@ -72,9 +75,11 @@ Not in the kickoff prompt's milestone list (M1–M7) by name, but everything in 
 | M3-011 | OAuth scope CI guard | Automated check that fails CI if the requested OAuth scope list changes without an explicit, reviewed diff. | NFR-SEC-03 | A test PR that adds a broader Drive scope fails CI with a clear message. |
 | M3-012 | Google OAuth app verification submission | Privacy policy, domain ownership, branding, scope justification, demo video prepared and submitted. | ARCHITECTURE.md §13 threat model | Verification submitted with enough lead time before launch (Google's review can take days–weeks) — treat as launch-blocking and start early, not at the end of M3. |
 | M3-013 | Data versioning/migration framework | `schemaVersion` handling for encrypted envelopes; a real migration exercised end-to-end. | ARCHITECTURE.md §14 | A v1-shaped fixture record migrates to a deliberately-introduced v2 shape in a test. |
-| M3-014 | School account & school-key setup — `BLOCKED ON: ADR-0010` | School entity creation, school-level key generation/wrapping, teacher-join flow granting wrapped key copies. | ADR-0010 | Do not start until the founder has confirmed the dual-encryption design and the storage-location sub-question in ADR-0010. |
-| M3-015 | Dual-encryption on result finalize — `BLOCKED ON: ADR-0010` | Teacher-under-school clients encrypt results to both their own key and the school key. | ADR-0010 | Same as above. |
-| M3-016 | Principal/school dashboard — `BLOCKED ON: ADR-0010` | School-wide results view, decrypting school-key copies client-side in the admin's browser. | Kickoff §1 workflow item 7, §3 School plan | Same as above. |
+| M3-014 | School account, school key & Drive container setup | School entity creation; school-level key generation/wrapping (ADR-0005 pattern); Workspace-vs-personal-account detection on the admin's Google account; create a Shared Drive (Workspace) or fallback folder (personal account) as the school's Drive container. Onboarding actively recommends free Google Workspace for Education when the admin is on a personal account. | FR-SCHOOL-01, ADR-0010 | A Workspace admin gets a real Shared Drive; a personal-account admin gets a folder + sees the Workspace recommendation. `schools.drive_location_type`/`drive_location_id` populated correctly in both cases. |
+| M3-015 | Teacher-join access grant flow (Drive share + Picker) | Admin's client shares the school Drive container with a newly added teacher; teacher's client walks them through the one-time Google Picker selection step that actually grants `drive.file` access to that container. | FR-SCHOOL-02, ADR-0010 | A teacher who hasn't completed the Picker step sees a clear, specific prompt (not a silent failure) the first time a dual-encrypted write is attempted. |
+| M3-016 | Dual-encryption on result finalize | Teacher-under-school clients encrypt results to both their own key (unaffected individual view) and the school key, writing the school copy into the shared container from M3-014/015. | FR-SCHOOL-03, ADR-0010 | Test: a teacher-under-school's individual results view is behaviorally identical to a non-school teacher's; the school-key copy independently decrypts in a separate admin test session. |
+| M3-017 | Principal/school dashboard | School-wide results view, decrypting school-key copies client-side in the admin's own browser. | FR-SCHOOL-04, kickoff §1 workflow item 7, §3 School plan | Backend never appears in the decrypt path — verified the same way as M5-011's admin structural check. |
+| M3-018 | Teacher-removal continuity handling | On removing a teacher from a school: revoke their Drive permission on the container; on the fallback (folder) path specifically, attempt best-effort ownership transfer of any files they still own onto the admin's account first. | FR-SCHOOL-05, ADR-0010 | Shared Drive path: verified structurally (files were never teacher-owned). Folder path: a test removal triggers the ownership-transfer attempt and logs/surfaces its outcome (success or the documented best-effort limitation) rather than failing silently. |
 
 ## M4 — Billing (Paddle, Bank Alfalah)
 
@@ -85,7 +90,7 @@ Not in the kickoff prompt's milestone list (M1–M7) by name, but everything in 
 | M4-003 | Paddle adapter | Checkout, webhook ingestion + signature verification, subscription lifecycle, country/currency from Paddle's reported billing country. | FR-BILLING-03, FR-BILLING-04, NFR-SEC-11 | A test purchase (Paddle sandbox) flows through to an `active` subscription and correct plan entitlement. |
 | M4-004 | Bank Alfalah adapter | PKR checkout/callback, signature/integrity verification, reconciliation into the same subscription shape. | FR-BILLING-04, NFR-SEC-11 | A test PKR purchase (sandbox/UAT if available) flows through to an `active` subscription. |
 | M4-005 | Entitlement/plan-check layer | Single provider-agnostic function the rest of the app calls to check plan/limits. | FR-BILLING-01 | Plan-gated features (unlimited templates, no ads, etc.) work identically regardless of which provider the subscription is on. |
-| M4-006 | Free-tier usage counters | `usage_counters` table, client-side increment-on-finalize call, optimistic offline buffering + reconciliation. | FR-BILLING-06, NFR-SEC-07 | Airplane-mode scanning session still enforces the cap correctly once back online; soft-enforcement behavior documented, not silently absent. |
+| M4-006 | Free-tier usage counters | `usage_counters` table, client-side increment-on-finalize call, optimistic offline buffering + reconciliation. **Founder-confirmed rule: never hard-block mid-scan or mid-session, even once the server-confirmed count exceeds the cap** — the limit warning surfaces only at next session start or on the dashboard. | FR-BILLING-06, NFR-SEC-07 | A test session that crosses the 150-sheet cap mid-session completes uninterrupted; the warning appears only on the next app open / dashboard visit, never as a mid-session block. |
 | M4-007 | Plan upgrade/downgrade/cancel flows | Teacher-facing plan management UI. | FR-BILLING-01 | Downgrade from Pro to Free correctly re-applies Free-tier limits going forward without touching historical data. |
 | M4-008 | School seat management | Minimum 5 seats, add/remove seats, per-teacher/year billing, proration per provider's rules. | FR-BILLING-07 | Adding a 6th seat mid-cycle bills correctly per the provider's proration behavior. |
 | M4-009 | Provider-adapter extensibility proof | A stub/mock third adapter (not Easypaisa/JazzCash for real, just a test double) proving the interface supports a new provider without touching existing code. | FR-BILLING-05 | Mock adapter passes the same contract test as M4-002 with zero changes to `PaymentProviderAdapter` or existing adapters. |
@@ -144,4 +149,14 @@ M0 (foundation) ─┬─▶ M1 (scanning core) ─▶ M2 (templates/review) ─
                                                                         └─▶ M7 (launch hardening, depends on all)
 ```
 
-M1/M2 have no dependency on the ADR-0005/ADR-0010 decisions and can start immediately. M3's core (individual teacher auth/Drive) is blocked only on ADR-0005; School-specific M3 tasks are additionally blocked on ADR-0010. M6 can largely proceed in parallel with M1–M5 once M0 scaffolding exists.
+ADR-0005 and ADR-0010 are both confirmed, so nothing in M1–M4 is decision-blocked anymore. M6 can largely proceed in parallel with M1–M5 once M0 scaffolding exists.
+
+---
+
+## Backlog (approved concepts, explicitly not scheduled into a milestone)
+
+Items here have founder sign-off to build *eventually* but were explicitly kept out of v1 launch scope. Don't start one without first promoting it into a milestone above (which is itself worth a quick founder check that priorities haven't shifted).
+
+| ID | Title | Description | Requirement(s) | Why it's here, not in a milestone |
+|---|---|---|---|---|
+| BACKLOG-001 | Offline-first scanning | Full scan flow (capture → score → local queue) works with zero network connection; only final Drive/local sync requires connectivity, queued if offline. | FR-SCAN-06, NFR-REL-01 | Founder approved the concept but explicitly deferred it past launch (`docs/reports/SHARLO-M0-007.md`) rather than building it into M1 as originally recommended. |

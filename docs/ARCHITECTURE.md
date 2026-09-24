@@ -151,6 +151,8 @@ users (
 schools (
   id uuid pk, name text, min_seats int default 5,
   school_wrapped_key_by_admin_passphrase bytea, -- see ADR-0010
+  drive_location_type text check in ('shared_drive','folder'), -- which continuity guarantee applies, see ADR-0010
+  drive_location_id text,   -- opaque Google resource ID, non-content pointer (same sensitivity class as `templates`, not exam content)
   created_at, updated_at
 )
 
@@ -201,6 +203,10 @@ usage_counters (
   sheets_scanned int default 0,
   primary key (user_id, period_start)
 )
+
+-- Account lifecycle / reminders (non-sensitive, account-level only — see ADR-0005 addendum)
+-- added to `users`: recovery_key_issued_at, recovery_key_reminder_7d_sent_at,
+-- recovery_key_reminder_30d_sent_at, recovery_key_reminder_dismissed_at (all nullable timestamptz)
 
 -- Non-sensitive templates
 templates (
@@ -315,6 +321,7 @@ Also required:
 - **Orchestration:** Docker Compose (Postgres, Fastify API, Caddy) — no Kubernetes; not justified at this scale and would cost more solo-founder time than it saves.
 - **Postgres:** self-hosted in the same Compose stack initially (per the kickoff prompt's "self-hosted API + PostgreSQL"), with nightly `pg_dump` backups shipped to S3-compatible object storage (Hetzner Object Storage or Backblaze B2) plus periodic Hetzner volume snapshots. Managed Postgres is a reasonable later upgrade if backup/ops burden grows — not needed to start.
 - **Object storage:** S3-compatible bucket for non-sensitive template geometry/assets only (§6).
+- **Transactional email: Resend.** Needed for the Recovery Key reminder cadence (ADR-0005 addendum) and later School-invite/billing-notice emails. See ADR-0011. Requires DKIM/SPF/DMARC setup on the sending domain as an M0 infra task, and a lightweight scheduled-job mechanism (in-process daily scheduler is sufficient at this scale — no job-queue infra needed yet) to drive the 7-day/30-day reminder checks.
 - **Domains:** marketing + app on the apex/`app.` subdomain via the main Next.js deployment; admin on its own subdomain (§11) — ideally a genuinely separate deploy target so a marketing-site bug can't accidentally expose admin routes.
 - **CI/CD:** GitHub Actions runs `npm run ci` (lint + typecheck + test) on every push/PR; a separate deploy workflow (SSH + `docker compose pull && up -d`, or a small container registry push/pull) runs on merge to `main`. No blue/green or k8s-style rollout needed at this scale — brief downtime on deploy is acceptable for v1 and should be explicitly, not silently, accepted.
 
@@ -346,13 +353,13 @@ Also required:
 
 ---
 
-## 15. Open architecture questions requiring a founder decision
+## 15. Architecture decisions — resolution log
 
-(Full context and recommendation for each is in `docs/reports/SHARLO-M0-001.md`; summarized here for architectural completeness.)
+(Full context lives in `docs/reports/SHARLO-M0-001.md` and `docs/reports/SHARLO-M0-007.md`; summarized here for architectural completeness. This section used to be phrased as open questions — all but one are now resolved.)
 
-1. **§9 / ADR-0005** — Encryption Passphrase as the resolution to the "password-derived wrap key" requirement, since Google-only auth has no password.
-2. **§6, §10, ADR-0010** — School-plan dual-encryption model for principal dashboards. This is a real design, not hand-waved, but it's a new mechanism the kickoff prompt didn't specify, so it needs sign-off before M3's School-plan work starts.
-3. **§7, FR-SCAN-06** — Offline-first scanning as a recommended (not explicitly requested) NFR.
-4. **§11** — Recommended network-layer hardening on the admin subdomain beyond the spec's 2FA baseline.
+1. **§9 / ADR-0005 — RESOLVED.** Encryption Passphrase confirmed as the resolution to the "password-derived wrap key" requirement. Founder additionally required the proactive Recovery Key reminder cadence now in the ADR-0005 addendum, which is what pulled transactional email (ADR-0011) into the architecture.
+2. **§6, §7, §10, ADR-0010 — RESOLVED.** School-plan dual-encryption confirmed, with school-key copies stored in a Drive location the *school admin* owns (Shared Drive preferred, folder fallback) rather than in individual teachers' Drives, for institutional-continuity reasons. Full access-grant mechanism (Google Picker requirement, teacher-removal handling) documented in the ADR.
+3. **§7, FR-SCAN-06 — DEFERRED TO BACKLOG.** Offline-first scanning approved as a concept but explicitly not in v1 scope; do not build against it until it's pulled off the backlog into a milestone.
+4. **§11 — STILL OPEN, non-blocking.** Recommended network-layer hardening on the admin subdomain beyond the spec's 2FA baseline has not been explicitly confirmed or declined. Tracked as task M7-007; revisit when M7 is reached.
 
-None of these block M1 (scanning engine core) or M2 (templates/review queue), which have no dependency on the auth/billing/school design. They do block parts of M3 and M4 as noted in `docs/TASKS.md`.
+Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`.

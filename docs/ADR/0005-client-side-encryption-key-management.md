@@ -1,6 +1,6 @@
 # ADR-0005: Client-side key management — Encryption Passphrase + Recovery Key wrap a per-teacher master key
 
-**Status:** Proposed — resolves a contradiction in the source spec; needs founder confirmation before M3 encryption work starts (see `docs/reports/SHARLO-M0-001.md`).
+**Status:** Accepted — confirmed by founder (see `docs/reports/SHARLO-M0-007.md`). The design below is final. The founder additionally required a proactive Recovery Key reminder cadence beyond the signup-time confirmation described here; see the "Recovery Key reminder cadence" addendum at the end of this ADR and `docs/SRS.md` FR-AUTH-09.
 
 ## Context
 
@@ -10,7 +10,7 @@ The kickoff prompt requires: a random master key per teacher, generated at accou
 
 This is exactly the kind of thing the kickoff prompt asks to be flagged rather than silently resolved — see the top of `docs/reports/SHARLO-M0-001.md`.
 
-## Decision (proposed)
+## Decision
 
 Introduce a separate secret, the **Encryption Passphrase**, distinct from the teacher's Google login, set during signup (right after Google OAuth completes) and known only to the teacher — never transmitted to or stored by our servers in any recoverable form.
 
@@ -30,5 +30,14 @@ This is the same pattern used by other products that combine SSO-style login wit
 ## Consequences
 
 - A teacher who loses **both** the Encryption Passphrase and the Recovery Key has permanently unrecoverable data — this is inherent to true zero-knowledge encryption, not a bug, but it's a real support-burden and product-risk surface worth the founder's explicit awareness (flagged again in the M0 report). Recommend strong onboarding UX around saving the Recovery Key (SRS FR-AUTH-05) and considering (later, not v1) a way for a school admin to be a break-glass recovery path *for teachers under that school's account specifically*, using the same dual-encryption mechanism as ADR-0010 — not a backdoor for individual/non-school teachers.
-- The passphrase is a second thing for a non-technical teacher to remember, beyond their Google login — a real UX cost, accepted as the price of the privacy guarantee actually being true rather than aspirational.
-- This needs founder sign-off specifically because it's a deviation from the literal spec text, even though it preserves the spec's evident intent.
+- The passphrase is a second thing for a non-technical teacher to remember, beyond their Google login — a real UX cost, accepted by the founder as the price of the privacy guarantee actually being true rather than aspirational (see `docs/reports/SHARLO-M0-007.md`).
+
+## Addendum: Recovery Key reminder cadence (founder-required, added post-acceptance)
+
+Self-reported confirmation at signup ("I've saved my Recovery Key") is a necessary but weak signal — it's well-established product behavior that users click through security-credential prompts without actually completing the underlying action, and even a genuine save at signup doesn't mean the file is still safely held 30 days later (devices get reset, downloads get cleared). The founder's explicit instruction: treat the signup-time click-through as a soft gate only, and proactively re-prompt until there's a real re-confirmation.
+
+Design:
+- `users` gains `recovery_key_issued_at`, `recovery_key_reminder_7d_sent_at`, `recovery_key_reminder_30d_sent_at`, and `recovery_key_reminder_dismissed_at` (all nullable timestamps).
+- A daily scheduled job selects accounts where `recovery_key_reminder_dismissed_at IS NULL` and the relevant interval has elapsed since `recovery_key_issued_at`, and triggers **both** an in-app persistent banner and a transactional email (see ADR-0011) — email specifically because the at-risk population is disproportionately teachers who haven't logged back in, who an in-app-only nudge would never reach.
+- The reminder flow requires an explicit re-confirmation action (re-download the Recovery Key + click "I've securely stored this") to set `recovery_key_reminder_dismissed_at` — a passive dismiss ("X" out of the banner) does not count and the reminder returns at the next interval.
+- This does not change the underlying cryptography in this ADR at all — it's an onboarding/lifecycle UX requirement layered on top, tracked in `docs/SRS.md` FR-AUTH-09 and `docs/TASKS.md` M3-004.
