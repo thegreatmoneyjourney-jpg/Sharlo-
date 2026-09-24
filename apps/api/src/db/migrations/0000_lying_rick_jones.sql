@@ -21,4 +21,4 @@ CREATE TABLE "users" (
 );
 --> statement-breakpoint
 ALTER TABLE "users" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
-CREATE POLICY "users_self_access_only" ON "users" AS PERMISSIVE FOR ALL TO "app_user" USING ("users"."id" = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY "users_self_access_only" ON "users" AS PERMISSIVE FOR ALL TO "app_user" USING ("users"."id" = nullif(current_setting('app.current_user_id', true), '')::uuid);

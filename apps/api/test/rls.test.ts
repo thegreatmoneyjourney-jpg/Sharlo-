@@ -64,10 +64,15 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
       expect(rows).toHaveLength(0);
     });
 
-    it('blocks an unscoped query (no tenant context set) from seeing any row — fails closed', async () => {
-      // Deliberately not using withTenantContext: no app.current_user_id is
-      // ever set on this connection, proving ADR-0008's "missing context
-      // means zero rows, not every row" claim rather than just asserting it.
+    it('blocks an unscoped query from seeing any row — fails closed, even on a pooled connection previously used by another tenant', async () => {
+      // Deliberately not using withTenantContext, and deliberately running
+      // this on `appDb`'s shared pool *after* the two tests above already
+      // used it inside a SET LOCAL-scoped transaction — this is the realistic
+      // failure mode (a pooled connection whose custom GUC has been touched
+      // before, per schema.ts's policy comment), not just a pristine
+      // never-used connection. This is exactly what caught the original bug
+      // here: current_setting(..., true) alone returns '' in this scenario,
+      // not NULL, and a naive ::uuid cast on it throws instead of denying.
       const rows = await appDb.select().from(users);
       expect(rows).toHaveLength(0);
     });

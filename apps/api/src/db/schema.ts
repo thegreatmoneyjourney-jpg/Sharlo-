@@ -51,14 +51,24 @@ export const users = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // Fails closed by design (ADR-0008): current_setting(..., true) returns
-    // NULL rather than erroring when unset, and `id = NULL` is never true —
-    // a connection that never sets app.current_user_id sees zero rows, not
-    // every row.
+    // Fails closed by design (ADR-0008): nullif(...) normalizes BOTH cases
+    // where there's no real tenant claim down to NULL, and `id = NULL` is
+    // never true. Two cases, not one — worth being explicit about why both
+    // are handled: (1) a genuinely fresh connection that never touched
+    // app.current_user_id, where current_setting(..., true) returns NULL;
+    // and (2) — the one a naive `::uuid` cast on current_setting() alone
+    // gets wrong — a *pooled* connection that previously ran a request
+    // inside withTenantContext's `SET LOCAL`-scoped transaction: once a
+    // custom GUC has been touched at all on a connection, Postgres resets
+    // it to '' (empty string), not back to NULL, when that transaction
+    // ends. An empty string cast straight to ::uuid throws a hard error
+    // instead of safely denying — caught by this table's own RLS test
+    // (test/rls.test.ts) hitting exactly this via connection-pool reuse,
+    // the same pooling this table's real callers (the Fastify app) use.
     pgPolicy('users_self_access_only', {
       for: 'all',
       to: 'app_user',
-      using: sql`${table.id} = current_setting('app.current_user_id', true)::uuid`,
+      using: sql`${table.id} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
     }),
   ],
 ).enableRLS();

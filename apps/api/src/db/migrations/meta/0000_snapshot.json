@@ -1,5 +1,5 @@
 {
-  "id": "9b1c13e4-04df-4053-bd8f-fa4796ca3a04",
+  "id": "36314d67-54b7-4154-88c8-1f1894fedefa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -137,7 +137,7 @@
           "as": "PERMISSIVE",
           "for": "ALL",
           "to": ["app_user"],
-          "using": "\"users\".\"id\" = current_setting('app.current_user_id', true)::uuid"
+          "using": "\"users\".\"id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
         }
       },
       "checkConstraints": {},
