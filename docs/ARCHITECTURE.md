@@ -87,6 +87,8 @@ Top-level structure — **corrected during M0 scaffolding** from an earlier sing
     /src
       /routes                 -- accounts, billing, admin, usage counters (§5)
       /db                       -- Drizzle schema + migrations
+/infra                    -- Caddyfile, deployment docs (M0-005) — not a workspace, no app code
+docker-compose.yml         -- Postgres + api + web + Caddy, one VPS, per §12
       /payments                 -- Paddle + Bank Alfalah adapters behind one interface
 ```
 

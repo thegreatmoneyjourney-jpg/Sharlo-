@@ -47,3 +47,31 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker-build:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Validates infra/ (M0-005) actually builds — this sandbox has no
+      # reachable Docker daemon to check this locally (docs/reports/
+      # SHARLO-M0-005.md), so this is the real verification, same pattern
+      # as the RLS test in M0-006. Build only, no push/run: a full
+      # `docker compose up` needs real domains for Caddy's TLS issuance,
+      # which only exists once the founder's VPS/DNS are live.
+      - name: Build api image
+        run: docker build -f apps/api/Dockerfile -t sharlo-api:ci .
+
+      - name: Build web image
+        run: docker build -f apps/web/Dockerfile -t sharlo-web:ci .
+
+      - name: Validate docker-compose.yml
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+        env:
+          POSTGRES_USER: ci_check
+          POSTGRES_PASSWORD: ci_check
+          APP_DB_ROLE_PASSWORD: ci_check
+          APP_DOMAIN: ci-check.example.com
+          API_DOMAIN: ci-check-api.example.com

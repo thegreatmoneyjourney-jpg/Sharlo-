@@ -1,0 +1,76 @@
+name: sharlo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sharlo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No published port: only other containers on this network can reach
+    # Postgres. If you need a one-off psql from the VPS host itself, use
+    # `docker compose exec postgres psql -U $POSTGRES_USER`, not a port map.
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      HOST: 0.0.0.0
+      # Owner/migration connection (creates app_user, runs migrations,
+      # grants privileges) — see apps/api/src/db/migrate.ts. Never the
+      # connection request handlers use.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharlo}
+      # Restricted connection the app actually queries through — subject
+      # to the Row-Level Security policies in apps/api/src/db/schema.ts.
+      APP_DATABASE_URL: postgres://app_user:${APP_DB_ROLE_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharlo}
+      APP_DB_ROLE_PASSWORD: ${APP_DB_ROLE_PASSWORD:?set in .env}
+    expose:
+      - '4000'
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    expose:
+      - '3000'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set in .env}
+      API_DOMAIN: ${API_DOMAIN:?set in .env}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

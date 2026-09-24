@@ -1,0 +1,20 @@
+# Caddy auto-provisions and renews TLS certificates for these domains via
+# Let's Encrypt — that requires DNS A/AAAA records already pointing at this
+# VPS's public IP *before* the container starts, or issuance fails. See
+# infra/README.md for the deployment order this depends on.
+{$APP_DOMAIN} {
+	reverse_proxy web:3000
+}
+
+{$API_DOMAIN} {
+	reverse_proxy api:4000
+}
+
+# Admin subdomain intentionally not wired up yet: the admin panel doesn't
+# exist as a separate route/deploy target in the codebase until M5
+# (ARCHITECTURE.md §3 notes it may become its own workspace, `apps/admin`,
+# rather than a route group inside `web` — undecided until then). Add the
+# block here once that's built, pointing at whichever service ends up
+# serving it — don't route an admin subdomain at `web` prematurely, since
+# ARCHITECTURE.md §11's "separate deploy target" guarantee for the admin
+# panel isn't true yet if it shares web's container.
