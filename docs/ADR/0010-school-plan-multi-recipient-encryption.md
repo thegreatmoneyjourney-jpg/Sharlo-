@@ -7,18 +7,18 @@
 The kickoff prompt requires two things in direct tension:
 
 1. School plan includes "a principal/admin dashboard with school-wide results" (kickoff §1 workflow item 7, §3 School plan).
-2. "Our backend must be architecturally incapable of reading student data... even we (admins) cannot read it" (kickoff §4.4), with the primary data store being *the individual teacher's own* Google Drive, encrypted to that teacher's own master key (kickoff §4.1–§4.2).
+2. "Our backend must be architecturally incapable of reading student data... even we (admins) cannot read it" (kickoff §4.4), with the primary data store being _the individual teacher's own_ Google Drive, encrypted to that teacher's own master key (kickoff §4.1–§4.2).
 
 If each teacher's results are encrypted only to that teacher's own key, sitting only in that teacher's own Drive, a principal has no cryptographic or storage-location path to see them — not "restricted by our backend," but actually impossible with the mechanism as specified. The source spec doesn't address this gap.
 
-**Founder's decision on the storage-location sub-question, and the reasoning behind it:** school-key-encrypted copies must live in a Drive location the *school admin* owns, not scattered across individual teachers' personal Drives — because school trust depends on institutional continuity: if a teacher leaves the school or their account is deactivated, the school's historical results must remain fully accessible to the admin regardless. Tying continuity to any individual teacher's personal Drive account is a trust and reliability risk for the institution, not just a technical inconvenience.
+**Founder's decision on the storage-location sub-question, and the reasoning behind it:** school-key-encrypted copies must live in a Drive location the _school admin_ owns, not scattered across individual teachers' personal Drives — because school trust depends on institutional continuity: if a teacher leaves the school or their account is deactivated, the school's historical results must remain fully accessible to the admin regardless. Tying continuity to any individual teacher's personal Drive account is a trust and reliability risk for the institution, not just a technical inconvenience.
 
 ## Decision
 
 ### Dual-encryption mechanism
 
 - Each School account gets its own randomly generated **school key** at creation, wrapped by the school admin's Encryption Passphrase/Recovery Key (same mechanism as ADR-0005), stored server-side as ciphertext (`schools.school_wrapped_key_by_admin_passphrase`).
-- When a teacher joins a school, their client receives a copy of the school key material, wrapped *to that teacher* (`school_members.school_pubkey_copy`), so the teacher's own credentials can unwrap it — our backend never can.
+- When a teacher joins a school, their client receives a copy of the school key material, wrapped _to that teacher_ (`school_members.school_pubkey_copy`), so the teacher's own credentials can unwrap it — our backend never can.
 - When a teacher-under-school finalizes exam results, the client encrypts the record **twice**: once to the teacher's own master key exactly as normal (so their individual view is unaffected), and once to the school key, written into the school-admin-owned Drive location described below.
 - The principal dashboard reads and decrypts the school-key copies client-side, in the admin's own browser. Our backend still never decrypts anything — it just serves ciphertext to a different keyholder.
 
@@ -29,15 +29,17 @@ At School account creation, the app creates a dedicated Drive container **owned 
 **Preferred implementation — Google Shared Drive (Workspace accounts):** if the admin's Google account supports Shared Drives (i.e., a Google Workspace account, including the free Workspace for Education Fundamentals tier — common among schools that already use Google Classroom), the app creates a Shared Drive for the school. This is the technically correct answer to the founder's continuity requirement: **files created inside a Shared Drive are owned by the Shared Drive itself, not by the individual member who created them.** A teacher's departure, account deactivation, or permission revocation has zero effect on data that's already there — this is Google's own mechanism for exactly the institutional-continuity problem being solved here, not something we have to approximate.
 
 **Fallback implementation — a regular Drive folder (personal/consumer Google accounts):** Shared Drives are not available to admins on a personal `@gmail.com`-style account (a real, common case — many schools in Sharlo's target markets, especially smaller or budget private schools, don't have a formal Workspace deployment). In this case, the app creates a regular folder owned by the admin and shares it with each teacher at Editor access. This is a materially weaker continuity guarantee: **a file a teacher creates inside a folder they only have Editor access to is owned by that teacher by default**, not by the folder or its owner. Mitigations, applied together:
-  1. On teacher removal, before revoking their share, the admin's authenticated client attempts a Drive API ownership transfer of any files still owned by the departing teacher onto the admin's own account.
-  2. The product actively recommends School-plan admins set up a free Google Workspace for Education account during School onboarding specifically to get the Shared Drive path — this is a real, concrete piece of onboarding guidance, not a vague suggestion, and should be built as such (M3-014).
-  3. Product copy about school-data continuity is precise about which guarantee applies: "guaranteed regardless of staff changes" language is only used for the Shared Drive path; the fallback path's messaging is honest about the weaker guarantee. This is the same principle as NFR-ACC-03's "don't overclaim" applied to a different feature.
+
+1. On teacher removal, before revoking their share, the admin's authenticated client attempts a Drive API ownership transfer of any files still owned by the departing teacher onto the admin's own account.
+2. The product actively recommends School-plan admins set up a free Google Workspace for Education account during School onboarding specifically to get the Shared Drive path — this is a real, concrete piece of onboarding guidance, not a vague suggestion, and should be built as such (M3-014).
+3. Product copy about school-data continuity is precise about which guarantee applies: "guaranteed regardless of staff changes" language is only used for the Shared Drive path; the fallback path's messaging is honest about the weaker guarantee. This is the same principle as NFR-ACC-03's "don't overclaim" applied to a different feature.
 
 ### Access-grant flow (why this needs the Google Picker, not just Drive sharing)
 
 `drive.file` scope (ADR-0004) only grants an app access to files it created itself, **unless** the user explicitly selects a file/folder through the Google Picker UI, which grants that specific file/folder to the app even though it didn't create it — this is Google's documented mechanism for exactly this situation, and it's a hard technical requirement, not an optional UX nicety.
 
 Flow:
+
 1. Admin creates the school's Drive container (Shared Drive or folder) through the app; this happens in the admin's authenticated browser session, browser-direct to Google, same as every other Drive operation in this system (ADR-0004) — our backend is told only the resulting resource's ID and type (`shared_drive` | `folder`), which is non-sensitive metadata comparable to a template record, not exam content (see `docs/ARCHITECTURE.md` §6).
 2. When a teacher is added to the school, the admin's client shares the container with the teacher's Google account (Drive permissions API call, browser-direct).
 3. The teacher's client, on first school-related sync, prompts them to open the Google Picker and select the shared container — a one-time step that actually grants their `drive.file`-scoped session write access to it. This must be surfaced as a clear, explained onboarding step ("Select the school folder shared with you by [Admin]") — without it, the teacher's dual-encryption write in step 4 simply fails, so it can't be skipped or assumed automatic.

@@ -21,26 +21,41 @@ If you only read one thing before the SRS/ARCHITECTURE docs, read `docs/reports/
 
 ## Tech stack
 
-| Layer | Choice | Why |
-|---|---|---|
-| Frontend | Next.js (App Router), React, TypeScript | SSR for SEO/AEO/GEO, one codebase for marketing + app + admin. See ADR-0002. |
-| Scanning/detection | OpenCV.js (WASM), 100% client-side | Zero per-scan cost, zero raw-image server exposure. See ADR-0001. |
-| Backend API | Fastify + TypeScript + Zod | Lightweight, strong TS ergonomics, low overhead on a small VPS. See ADR-0007. |
-| Database | PostgreSQL (self-hosted), Drizzle ORM, Row-Level Security | No BaaS billing surprises; RLS as a hard multi-tenancy backstop. See ADR-0003, ADR-0007, ADR-0008. |
-| Primary student data store | Teacher's own Google Drive (`drive.file` scope), client-side AES-256-GCM encrypted | Our servers can't read student data because they never receive it. See ADR-0004. |
-| Auth | Sign in with Google (redirect OAuth, PKCE) | One-step auth + Drive consent. |
-| Payments | Paddle (global MoR) + Bank Alfalah (Pakistan PKR) | No Stripe/PayPal. See ADR-0006. |
-| Hosting | Hetzner VPS, Docker Compose, Caddy | Low fixed cost, solo-operable. See ADR-0009. |
+| Layer                      | Choice                                                                             | Why                                                                                                |
+| -------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Frontend                   | Next.js (App Router), React, TypeScript                                            | SSR for SEO/AEO/GEO, one codebase for marketing + app + admin. See ADR-0002.                       |
+| Scanning/detection         | OpenCV.js (WASM), 100% client-side                                                 | Zero per-scan cost, zero raw-image server exposure. See ADR-0001.                                  |
+| Backend API                | Fastify + TypeScript + Zod                                                         | Lightweight, strong TS ergonomics, low overhead on a small VPS. See ADR-0007.                      |
+| Database                   | PostgreSQL (self-hosted), Drizzle ORM, Row-Level Security                          | No BaaS billing surprises; RLS as a hard multi-tenancy backstop. See ADR-0003, ADR-0007, ADR-0008. |
+| Primary student data store | Teacher's own Google Drive (`drive.file` scope), client-side AES-256-GCM encrypted | Our servers can't read student data because they never receive it. See ADR-0004.                   |
+| Auth                       | Sign in with Google (redirect OAuth, PKCE)                                         | One-step auth + Drive consent.                                                                     |
+| Payments                   | Paddle (global MoR) + Bank Alfalah (Pakistan PKR)                                  | No Stripe/PayPal. See ADR-0006.                                                                    |
+| Hosting                    | Hetzner VPS, Docker Compose, Caddy                                                 | Low fixed cost, solo-operable. See ADR-0009.                                                       |
 
 Full rationale for every choice above lives in `docs/ADR/`.
 
 ## Local development
 
-Not yet scaffolded — tracked as `docs/TASKS.md` task `M0-002`. Once scaffolding lands, this section will cover: prerequisites, `npm install`, environment variables, `npm run dev`, and running the app against a local Postgres via Docker Compose.
+npm workspaces monorepo: `apps/web` (Next.js — marketing site, teacher app, admin) and `apps/api` (Fastify — accounts, billing, admin, usage counters; see `docs/ARCHITECTURE.md` §5 for what it deliberately does _not_ handle).
+
+Prerequisites: Node.js 22+.
+
+```bash
+npm install          # installs both workspaces from the root
+npm run dev:web       # http://localhost:3000
+npm run dev:api        # http://localhost:4000/health
+```
+
+Postgres/Drizzle, Docker Compose, and env var wiring land in `docs/TASKS.md` tasks `M0-004`–`M0-006` — until then there's nothing to configure beyond the two dev servers above.
 
 ## Running CI checks locally
 
-Not yet set up — tracked as `docs/TASKS.md` task `M0-003`. The plan is a single `npm run ci` script bundling lint + typecheck + tests, matching exactly what GitHub Actions runs, so nothing is ever pushed that hasn't been checked locally first.
+```bash
+npm run ci      # prettier --check, eslint, tsc --noEmit, vitest — across both workspaces
+npm run build    # production build of both workspaces
+```
+
+This is exactly what `.github/workflows/ci.yml` runs on every push/PR — run it yourself before pushing, per `CLAUDE.md`.
 
 ## Contributing / working conventions
 
