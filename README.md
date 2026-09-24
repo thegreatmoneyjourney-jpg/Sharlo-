@@ -1,2 +1,47 @@
-# Sharlo-
-Sharlo 
+# Sharlo
+
+Grade multiple-choice bubble sheets by camera — no scanner, no per-scan cost, no server ever seeing student data.
+
+A teacher shows a bubble sheet to their phone or laptop camera; within ~2 seconds it's detected and scored, and the app is ready for the next sheet. Anything the engine can't confidently read is flagged for a quick manual review instead of being auto-guessed. Results land in an editable table with per-class analytics, export, and printable result cards.
+
+> **Project status:** planning phase. The docs below define the full v1 scope and are awaiting founder review before feature code is written. See `docs/TASKS.md` M0 for the repo-scaffolding work that comes next.
+
+## Documentation
+
+Start here, in this order:
+
+1. [`docs/SRS.md`](docs/SRS.md) — what the product must do (functional + non-functional requirements, acceptance criteria).
+2. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how it's built (system design, data model, encryption design, threat model).
+3. [`docs/ADR/`](docs/ADR) — why specific technical decisions were made, one file per decision.
+4. [`docs/TASKS.md`](docs/TASKS.md) — the work, broken into milestones and tracked tasks.
+5. [`docs/reports/`](docs/reports) — one report per completed task, written as work lands.
+6. [`CLAUDE.md`](CLAUDE.md) — persistent working instructions for AI-assisted development on this repo.
+
+If you only read one thing before the SRS/ARCHITECTURE docs, read `docs/reports/SHARLO-M0-001.md` — it's short and flags the handful of real decisions this plan needs from the founder before certain milestones can proceed.
+
+## Tech stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Frontend | Next.js (App Router), React, TypeScript | SSR for SEO/AEO/GEO, one codebase for marketing + app + admin. See ADR-0002. |
+| Scanning/detection | OpenCV.js (WASM), 100% client-side | Zero per-scan cost, zero raw-image server exposure. See ADR-0001. |
+| Backend API | Fastify + TypeScript + Zod | Lightweight, strong TS ergonomics, low overhead on a small VPS. See ADR-0007. |
+| Database | PostgreSQL (self-hosted), Drizzle ORM, Row-Level Security | No BaaS billing surprises; RLS as a hard multi-tenancy backstop. See ADR-0003, ADR-0007, ADR-0008. |
+| Primary student data store | Teacher's own Google Drive (`drive.file` scope), client-side AES-256-GCM encrypted | Our servers can't read student data because they never receive it. See ADR-0004. |
+| Auth | Sign in with Google (redirect OAuth, PKCE) | One-step auth + Drive consent. |
+| Payments | Paddle (global MoR) + Bank Alfalah (Pakistan PKR) | No Stripe/PayPal. See ADR-0006. |
+| Hosting | Hetzner VPS, Docker Compose, Caddy | Low fixed cost, solo-operable. See ADR-0009. |
+
+Full rationale for every choice above lives in `docs/ADR/`.
+
+## Local development
+
+Not yet scaffolded — tracked as `docs/TASKS.md` task `M0-002`. Once scaffolding lands, this section will cover: prerequisites, `npm install`, environment variables, `npm run dev`, and running the app against a local Postgres via Docker Compose.
+
+## Running CI checks locally
+
+Not yet set up — tracked as `docs/TASKS.md` task `M0-003`. The plan is a single `npm run ci` script bundling lint + typecheck + tests, matching exactly what GitHub Actions runs, so nothing is ever pushed that hasn't been checked locally first.
+
+## Contributing / working conventions
+
+See `CLAUDE.md` for CI rules, the report-writing convention, and the non-negotiable architectural constraints (no server-side image processing, `drive.file` scope only, no auto-guessing ambiguous marks, etc.).
