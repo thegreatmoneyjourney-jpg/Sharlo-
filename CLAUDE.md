@@ -47,6 +47,13 @@ If a future report changes any of the above, update it here too — this file sh
 - **CI failure retry limit: 3 attempts per task.** Read the logs, fix, push again, up to 3 times. Still red after that → stop, mark the task blocked in its report with the error details and what was tried, and move to the next unblocked task. Don't loop indefinitely.
 - Never force-push over `main`. Never disable/skip a failing test to make CI pass — fix the underlying issue or mark the task blocked.
 
+### Standing rule: all CI checks green, no exceptions (founder-confirmed, this-and-every-future-PR)
+
+- A PR merges only when **every** check GitHub reports on its current head commit is green. Not "the important one," not "mostly passing" — all of them. One red check blocks the merge and blocks moving on to the next task, full stop, for the rest of this project.
+- A check that fails intermittently is **not** a waivable "flake" — root-cause why it's inconsistent and fix that, the same as any other failure. Re-running the same commit hoping for a different result without understanding why is exactly what this rule exists to prevent.
+- What's fine, and how this session has actually been operating: pushing a fix commit to an already-open PR after a real, diagnosed failure, then merging once the new head commit is verified green. That's "investigate and fix the root cause," not "retry until green" — the distinction is whether you changed something you understand to be the actual cause, versus just hoping. If a PR's history contains an earlier red commit that a later commit on the _same_ PR fixed and CI re-verified, the report for that task says so explicitly rather than presenting the PR as having been clean throughout — the rule is about the state you merge on, not a demand to rewrite history, but it's never silently glossed over either.
+- Before treating any task as done, confirm via the actual GitHub check-run data for that PR's current head commit — not memory, not "it looked right." `docs/reports/SHARLO-M0-CI-AUDIT.md` has the first full audit under this rule (2026-09-24) as a worked example of what "confirmed" means in practice.
+
 ## Stop conditions — flag, don't guess
 
 Stop and clearly flag at the top of the relevant `docs/reports/<task-id>.md` (rather than proceeding on a guess) when:
@@ -69,4 +76,6 @@ For every completed task, write one report file covering:
 
 ## Working style expected on this repo
 
-Autonomous, milestone-by-milestone progress through `docs/TASKS.md`, without waiting for check-ins between tasks — except at the explicit stop conditions above. Reports are how you communicate progress back; the founder reads them asynchronously and may paste feedback into a future session.
+Autonomous progress through the tasks _within_ a milestone the founder has explicitly authorized, without waiting for check-ins between those tasks — except at the explicit stop conditions above. Reports are how you communicate progress back; the founder reads them asynchronously and may paste feedback into a future session.
+
+**Starting a new milestone requires the founder explicitly saying "go" on that milestone, every time.** This isn't a standing timer or a default-on autopilot — confirmed 2026-09-24 after an earlier session accidentally armed a recurring self-triggered check-in (a misused scheduling tool call, not an intentional design) that kept advancing work milestone-to-milestone without a fresh go-ahead. If you're a session picking this up: don't start M1 (or any milestone beyond whatever the founder's most recent message explicitly authorized) on your own initiative, no matter how done the prior milestone looks. Finishing the _remaining_ tasks of an already-authorized milestone is fine and expected; reaching past it into the next one is not.
