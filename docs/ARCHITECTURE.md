@@ -243,6 +243,7 @@ app_config (
   updated_at, updated_by uuid references users(id)
 )
 -- seeded: ('public_result_ttl_days', '30', 'STRAI ID expiry window, FR-PUBLISH-05')
+-- seeded: ('entitlement_cache_max_age_hours', '24', 'Client entitlement-cache freshness window, ADR-0015')
 
 -- Non-sensitive templates
 templates (
@@ -439,6 +440,6 @@ Also required:
 4. **§11 — STILL OPEN, non-blocking.** Recommended network-layer hardening on the admin subdomain beyond the spec's 2FA baseline has not been explicitly confirmed or declined. Tracked as task M7-007; revisit when M7 is reached.
 5. **Gulf PPP pricing — RESOLVED, confirmed 2026-09-24.** Seed table now in `docs/SRS.md` §5.9a.
 6. **§6, §7a, ADR-0012 (Public Result Announcement) — RESOLVED, confirmed 2026-09-24 (Addendum 2), including the storage/access-model design.** The one deliberate exception to the zero-server-plaintext architecture; full design in §7a.
-7. **`docs/SRS.md` NFR-SEC-12 (Free-tier gating given the client-side architecture) — PROPOSED, flagged for founder confirmation, not yet settled the way 1–6 are.** Addendum 2 asked for server-side rejection of gated feature calls; most of Addendum 2's new features have no server call to reject, by this architecture's own design (ADR-0001). NFR-SEC-12 proposes the resolution (server-sourced entitlement as source of truth, real rejection wherever a server endpoint genuinely exists) — this needs an explicit yes/no from the founder, not an assumption that silence means agreement, given how emphatic the founder has been about precision on exactly this kind of thing.
+7. **`docs/SRS.md` NFR-SEC-12 (Free-tier gating given the client-side architecture) — RESOLVED, confirmed.** Server-sourced entitlement as source of truth, real rejection wherever a server endpoint genuinely exists; founder explicitly declined moving computation server-side to get stronger enforcement (the privacy model, `ADR-0001`, isn't a trade-off target). Founder added one refinement: the entitlement fetch caches locally with a bounded freshness window (~24h default) and tolerates offline use, re-validating on reconnect rather than requiring a live round-trip per check — full design in `ADR-0015`, written specifically so `BACKLOG-001` (offline-first scanning) has this already figured out whenever it's built.
 
-Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–6 unblock the corresponding parts of M4 and the new M12 (`docs/TASKS.md`). Item 7 doesn't block M8–M11's client-only feature work, but should be confirmed before M8–M11's entitlement-check code is actually written, not after.
+Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Nothing in this numbered list is still open as of this round — the one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of Addendum 1 or 2's decisions.
