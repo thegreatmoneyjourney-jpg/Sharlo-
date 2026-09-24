@@ -1,6 +1,6 @@
 # Report: SHARLO-M0-009 — Addendum 2 scope (Sections 1–7) incorporated into SRS/ARCHITECTURE/TASKS + new ADRs
 
-**Status: both flags reviewed and confirmed by the founder; follow-up implemented (ADR-0015 + wording fixes); pushed and pending this session's CI-verify-then-merge before this is actually done.** See the "Founder review round 2" section near the end for what changed after the founder's first read, and its own Status subsection at the very end of this file for the real final state — don't treat this top line as confirming a merge that hasn't happened yet. The original report below is otherwise unedited from before that round, including a miscount in my own chat summary that's corrected there rather than quietly fixed.
+**Status: DONE. Both flags reviewed and confirmed by the founder; follow-up implemented (ADR-0015 + wording fixes); PR #10 merged to `main` (merge commit `ebbc410`), both CI checks verified green on the final head commit `926d686` before merging.** See the "Founder review round 2" section near the end for what changed after the founder's first read, and its own Status subsection at the very end of this file for the full final-state detail. The original report below is otherwise unedited from before that round, including a miscount in my own chat summary that's corrected there rather than quietly fixed.
 
 ---
 
@@ -96,4 +96,4 @@ Same PR #10, three new commits: `ADR-0015`, the `NFR-SEC-12`/`FR-BILLING-08` wor
 
 ## Status (final, this round)
 
-Both flags confirmed and fully implemented, not just acknowledged in prose — pushed to PR #10, watching CI now, merging once it's verified green (this exact sentence gets updated to say so once that's actually true, not before). M1 is authorized to start immediately after that merge, per your explicit "no further go needed beyond that merge."
+Both flags confirmed and fully implemented, not just acknowledged in prose. Pushed to PR #10 as commit `926d686`; both CI checks (`Lint, typecheck, test` and `Docker images build`) confirmed green on that head commit via GitHub's check-run data (not assumed) before merging; merged to `main` as commit `ebbc410` on 2026-09-24. M1 (scanning engine core) is now authorized to start, per your explicit "no further go needed beyond that merge."
