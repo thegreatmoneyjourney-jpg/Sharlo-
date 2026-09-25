@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { loadOpenCv } from '@/lib/scanning/opencv-loader';
-import type { QuestionResult } from '@/lib/scanning/bubble-fill';
-import { applyReviewResolution, rescoreSheet, scoreSheet } from '@/lib/scanning/score-answers';
-import type { QuestionResolution, ScoredSheet } from '@/lib/scanning/score-answers';
+import { applyReviewResolution, rescoreSheet } from '@/lib/scanning/score-answers';
+import type { QuestionResolution } from '@/lib/scanning/score-answers';
 import type { TemplateGeometry } from '@/lib/templates/geometry';
 import { useCameraStream } from '../../scan/use-camera-stream';
 import { useCornerDetection } from '../../scan/use-corner-detection';
@@ -14,37 +13,18 @@ import type { CapturedFrame } from '../../scan/capture-video-frame';
 import { useSheetReader } from './use-sheet-reader';
 import { ReviewQueuePanel, purgeExpiredCrops } from './review-queue-panel';
 import type { ReviewQueueItem } from './review-queue-panel';
-
-/** One scanned student sheet, accumulated across the whole scan-students session (M2-006) — `scored` is re-derived via `rescoreSheet` whenever a review-queue item for this student is resolved, never hand-edited in place. */
-interface StudentResult {
-  id: number;
-  rollNumber: string | null;
-  scored: ScoredSheet;
-}
-
-/**
- * M2-008 (FR-DETECT-05): a freshly-read capture whose roll number matches
- * an already-saved student, held here rather than added straight to
- * `students`/`reviewQueue` — "warn... before it's saved" means exactly
- * that: nothing about this capture is committed until the teacher
- * explicitly confirms or cancels it.
- */
-interface PendingDuplicate {
-  rollNumber: string;
-  newStudent: StudentResult;
-  newQueueItems: ReviewQueueItem[];
-}
-
-type Mode =
-  | { phase: 'capture-key'; error?: string }
-  | {
-      phase: 'scan-students';
-      key: QuestionResult[];
-      students: StudentResult[];
-      reviewQueue: ReviewQueueItem[];
-      showReviewQueue: boolean;
-      pendingDuplicate: PendingDuplicate | null;
-    };
+import { applyReadResult } from './exam-scan-mode';
+import type { Mode } from './exam-scan-mode';
+import { detectAndReadSheet } from '@/lib/scanning/read-sheet-from-image';
+import { loadImageFile } from '@/lib/scanning/load-image-file';
+import {
+  advanceBatch,
+  buildBatchQueue,
+  keyAttemptRejection,
+  startBatch,
+  NO_SHEET_DETECTED_REASON,
+} from './batch-import';
+import type { BatchImportState } from './batch-import';
 
 const SECONDARY_BUTTON_CLASSES =
   'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
@@ -93,8 +73,11 @@ export function ExamScanFlow({
 }) {
   const [openCvReady, setOpenCvReady] = useState(false);
   const [mode, setMode] = useState<Mode>({ phase: 'capture-key' });
+  const [batch, setBatch] = useState<BatchImportState | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const processedAtRef = useRef<number | null>(null);
+  const batchActive = batch !== null && batch.phase !== 'done';
 
   const camera = useCameraStream(videoRef);
   const ready = openCvReady && camera.state.status === 'live';
@@ -125,78 +108,89 @@ export function ExamScanFlow({
 
   useEffect(() => {
     if (!readResult || !capturedFrame) return;
+    if (batchActive) return; // a batch import owns `mode` updates while it runs — see the batch-processing effect below
     if (processedAtRef.current === capturedFrame.capturedAt) return;
     processedAtRef.current = capturedFrame.capturedAt;
 
-    setMode((prev) => {
-      if (prev.phase === 'capture-key') {
-        const unresolved = readResult.result.questions
-          .map((q, i) => (q.outcome === 'answered' ? null : i + 1))
-          .filter((n): n is number => n !== null);
-        if (unresolved.length === 0) {
-          return {
-            phase: 'scan-students',
-            key: readResult.result.questions,
-            students: [],
-            reviewQueue: [],
-            showReviewQueue: false,
-            pendingDuplicate: null,
-          };
+    setMode((prev) =>
+      applyReadResult(prev, {
+        readResult,
+        studentId: capturedFrame.capturedAt,
+        addedAt: Date.now(),
+        geometry,
+      }),
+    );
+  }, [readResult, capturedFrame, geometry, batchActive]);
+
+  // M2-009 (FR-EXAM-04): drives a batch import one sheet at a time,
+  // through the exact same `applyReadResult` live capture uses (never a
+  // parallel reimplementation — see read-sheet-from-image.ts's own doc
+  // comment). Keyed on `[batch, mode, geometry]` rather than any manual
+  // async chaining: `applyReadResult` already returns `pendingDuplicate`
+  // set instead of saving a colliding roll number, so this effect's own
+  // guard clause below naturally stops advancing the moment that happens
+  // and picks back up on its own once the teacher's existing
+  // confirm/cancel handlers clear it — no separate pause/resume plumbing
+  // needed. Safe to read `mode` directly (not via a `setMode` updater)
+  // because nothing else can mutate it while a batch is active: the live
+  // effect above stands down via `batchActive`, and the review-queue
+  // button that could otherwise race a resolve against this is disabled
+  // for the same reason (see the render below).
+  useEffect(() => {
+    if (!batch || batch.phase !== 'processing') return;
+    if (mode.phase === 'scan-students' && mode.pendingDuplicate) return; // paused on a pending duplicate
+
+    let cancelled = false;
+    const item = batch.items[batch.index]!;
+
+    void (async () => {
+      let failure: { label: string; reason: string } | undefined;
+      let nextMode: Mode | null = null;
+
+      try {
+        const [{ cv }, loaded] = await Promise.all([
+          loadOpenCv(),
+          item.kind === 'image' ? loadImageFile(item.file) : item.doc.loadPage(item.pageNumber),
+        ]);
+        if (cancelled) return;
+
+        const detected = detectAndReadSheet(cv, loaded.imageData, geometry);
+        if (detected.status === 'no-markers-detected') {
+          failure = { label: item.label, reason: NO_SHEET_DETECTED_REASON };
+        } else {
+          nextMode = applyReadResult(mode, {
+            readResult: detected.outcome,
+            studentId: Date.now() + batch.index,
+            addedAt: Date.now(),
+            geometry,
+          });
+          const rejection = keyAttemptRejection(mode, nextMode);
+          if (rejection) failure = { label: item.label, reason: rejection };
         }
-        return {
-          phase: 'capture-key',
-          error: `Question${unresolved.length > 1 ? 's' : ''} ${unresolved.join(', ')} ${unresolved.length > 1 ? "weren't" : "wasn't"} clearly marked on the key sheet — hold it steady and scan again.`,
+      } catch (err) {
+        failure = {
+          label: item.label,
+          reason: err instanceof Error ? err.message : "Couldn't process this file.",
         };
       }
 
-      // A decision on the last capture is still pending — ignore further
-      // captures rather than letting a second one silently interfere with
-      // (or get lost behind) the one the teacher hasn't resolved yet.
-      if (prev.pendingDuplicate) return prev;
+      if (cancelled) return;
+      if (nextMode) setMode(nextMode);
+      setBatch((prev) => (prev ? advanceBatch(prev, failure) : prev));
+    })();
 
-      const studentId = capturedFrame.capturedAt;
-      const rollNumber = readResult.rollRead.status === 'read' ? readResult.rollRead.value : null;
-      const scored = scoreSheet(readResult.result.questions, prev.key);
-      const newStudent: StudentResult = { id: studentId, rollNumber, scored };
+    return () => {
+      cancelled = true;
+    };
+  }, [batch, mode, geometry]);
 
-      const addedAt = Date.now();
-      const newQueueItems: ReviewQueueItem[] = readResult.reviewCrops.map((crop) =>
-        crop.kind === 'question'
-          ? {
-              id: `${studentId}-q${crop.questionNumber}`,
-              studentId,
-              addedAt,
-              cropDataUrl: crop.cropDataUrl,
-              kind: 'question',
-              questionNumber: crop.questionNumber,
-              optionCount: geometry.questions[crop.questionNumber - 1]?.options.length ?? 0,
-            }
-          : {
-              id: `${studentId}-roll`,
-              studentId,
-              addedAt,
-              cropDataUrl: crop.cropDataUrl,
-              kind: 'roll-number',
-            },
-      );
-
-      // FR-DETECT-05: same roll number already scanned for this exam ->
-      // hold the capture for confirmation rather than saving it straight
-      // away. Roll-number-only matching, not FR-DETECT-05's own "or a
-      // matching visual fingerprint" alternative — see
-      // docs/reports/SHARLO-M2-008.md's Flags for why that's out of
-      // scope here rather than half-built.
-      if (rollNumber !== null && prev.students.some((s) => s.rollNumber === rollNumber)) {
-        return { ...prev, pendingDuplicate: { rollNumber, newStudent, newQueueItems } };
-      }
-
-      return {
-        ...prev,
-        students: [...prev.students, newStudent],
-        reviewQueue: [...prev.reviewQueue, ...newQueueItems],
-      };
-    });
-  }, [readResult, capturedFrame, geometry]);
+  async function handleFilesPicked(fileList: FileList) {
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+    setBatch({ phase: 'preparing' });
+    const { items, failures } = await buildBatchQueue(files);
+    setBatch(startBatch(items, failures));
+  }
 
   // M2-007 (FR-REVIEW-03): purges each review item's crop image once it's
   // sat unresolved past REVIEW_IMAGE_RETENTION_MS, regardless of whether
@@ -322,12 +316,35 @@ export function ExamScanFlow({
     <div className="relative flex flex-1 flex-col overflow-hidden bg-black">
       <div className="relative flex flex-1 items-center justify-center">
         <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
-        {mode.phase === 'capture-key' && (
+        {batch?.phase === 'preparing' && (
+          <div
+            className="absolute top-2 left-1/2 -translate-x-1/2 rounded bg-black/60 px-3 py-1.5 text-center text-sm text-white"
+            role="status"
+            aria-live="polite"
+          >
+            Preparing files…
+          </div>
+        )}
+        {batch?.phase === 'processing' && (
+          <div
+            className="absolute top-2 left-1/2 flex -translate-x-1/2 flex-col items-center gap-0.5 rounded bg-black/70 px-3 py-1.5 text-center text-white"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="text-sm">
+              Processing sheet {batch.index + 1} of {batch.items.length}
+            </span>
+            <span className="max-w-[80vw] truncate text-xs text-zinc-300">
+              {batch.items[batch.index]!.label}
+            </span>
+          </div>
+        )}
+        {!batchActive && mode.phase === 'capture-key' && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 rounded bg-black/60 px-3 py-1.5 text-center text-sm text-white">
             Scan the answer key sheet first
           </div>
         )}
-        {mode.phase === 'capture-key' && mode.error && (
+        {!batchActive && mode.phase === 'capture-key' && mode.error && (
           <div
             className="absolute top-12 left-1/2 max-w-xs -translate-x-1/2 rounded bg-red-600/90 px-3 py-2 text-center text-xs text-white"
             role="alert"
@@ -335,7 +352,7 @@ export function ExamScanFlow({
             {mode.error}
           </div>
         )}
-        {mode.phase === 'scan-students' && (
+        {!batchActive && mode.phase === 'scan-students' && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 rounded bg-emerald-600/90 px-3 py-1.5 text-center text-sm text-white">
             Key captured — scan student sheets
           </div>
@@ -370,12 +387,12 @@ export function ExamScanFlow({
         <button
           type="button"
           onClick={manualCapture.capture}
-          disabled={!manualCapture.canCapture}
+          disabled={!manualCapture.canCapture || batchActive}
           className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-white/90 px-6 py-3 text-sm font-medium text-zinc-900 shadow-lg disabled:cursor-not-allowed disabled:opacity-40"
         >
           Take Photo
         </button>
-        {mode.phase === 'scan-students' && mode.showReviewQueue && (
+        {mode.phase === 'scan-students' && !batchActive && mode.showReviewQueue && (
           <ReviewQueuePanel
             items={mode.reviewQueue}
             onResolveQuestion={resolveQuestionItem}
@@ -417,16 +434,73 @@ export function ExamScanFlow({
             </div>
           </div>
         )}
+        {batch?.phase === 'done' && (
+          <div
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/95 p-6 text-center text-white"
+            role="alertdialog"
+            aria-label="Batch import finished"
+          >
+            <p className="text-sm">
+              Imported {batch.succeeded} sheet{batch.succeeded === 1 ? '' : 's'}.
+            </p>
+            {batch.failures.length > 0 && (
+              <div className="max-h-48 w-full max-w-xs overflow-y-auto rounded bg-red-950/60 p-3 text-left">
+                <p className="mb-1.5 text-xs font-medium text-red-300">
+                  {batch.failures.length} sheet{batch.failures.length === 1 ? '' : 's'} didn&rsquo;t
+                  come through:
+                </p>
+                <ul className="space-y-1.5">
+                  {batch.failures.map((failure, i) => (
+                    <li key={i} className="text-xs text-zinc-300">
+                      <span className="font-medium text-white">{failure.label}</span>
+                      {' — '}
+                      {failure.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setBatch(null)}
+              className="rounded bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200"
+            >
+              Done
+            </button>
+          </div>
+        )}
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,application/pdf"
+        multiple
+        aria-label="Choose files to import"
+        className="hidden"
+        onChange={(e) => {
+          const { files } = e.target;
+          if (files) void handleFilesPicked(files);
+          e.target.value = '';
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={batchActive}
+        className="absolute top-12 right-2 rounded bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Import files
+      </button>
       {mode.phase === 'scan-students' && mode.students.length > 0 && (
         <button
           type="button"
+          disabled={batchActive}
           onClick={() =>
             setMode((prev) =>
               prev.phase === 'scan-students' ? { ...prev, showReviewQueue: true } : prev,
             )
           }
-          className="absolute top-2 left-2 rounded bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80"
+          className="absolute top-2 left-2 rounded bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {mode.reviewQueue.length > 0
             ? `Review Needed (${mode.reviewQueue.length})`

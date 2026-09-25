@@ -505,3 +505,116 @@ test.describe('Review Queue crop generation (M2-006, FR-REVIEW-01, FR-DETECT-04)
     expect(crop.height).toBeGreaterThan(10);
   });
 });
+
+test.describe('M2-009 batch import: detectAndReadSheet against an uncropped capture with no pre-known corners', () => {
+  // Live capture always already knows its corners (the continuous
+  // per-frame detection loop found them before a frame is ever handed
+  // off — see use-sheet-reader.ts), so `runFullStockSheetReadCase`
+  // above never exercises detectAndReadSheet's own corner-detection
+  // step. A batch-imported image/PDF page starts cold, exactly like
+  // this case does — this is the real, production function
+  // exam-scan-flow.tsx's batch loop calls, not a harness
+  // reimplementation of it.
+  const cyclingAnswers = Array.from({ length: 20 }, (_, i) => i % 4);
+  const rollDigits = [4, 0, 7, 1, 2, 3];
+
+  test('detects corners from scratch and reads every question and roll-number digit correctly', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runDetectAndReadSheetCase(spec),
+      {
+        questionCount: 20 as const,
+        tiltDeg: 0,
+        answers: { questionAnswers: cyclingAnswers, rollNumberDigits: rollDigits },
+      },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(
+      cyclingAnswers.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+    expect(result.rollNumberColumns).toEqual(
+      rollDigits.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+  });
+
+  test('still reads correctly when the uploaded capture itself is tilted (10°)', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runDetectAndReadSheetCase(spec),
+      {
+        questionCount: 20 as const,
+        tiltDeg: 10,
+        answers: { questionAnswers: cyclingAnswers, rollNumberDigits: rollDigits },
+      },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(
+      cyclingAnswers.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+    expect(result.rollNumberColumns).toEqual(
+      rollDigits.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+  });
+
+  test('an entirely unfilled sheet reads back as all-blank, never a guessed pick', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const questionAnswers: (number | null)[] = new Array(20).fill(null);
+    const rollNumberDigits: (number | null)[] = new Array(6).fill(null);
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runDetectAndReadSheetCase(spec),
+      { questionCount: 20 as const, tiltDeg: 0, answers: { questionAnswers, rollNumberDigits } },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(questionAnswers.map(() => ({ outcome: 'blank' })));
+    expect(result.rollNumberColumns).toEqual(rollNumberDigits.map(() => ({ outcome: 'blank' })));
+  });
+});
+
+test.describe('M2-009 batch import: real pdfjs-dist PDF-page rendering (lib/scanning/load-pdf-file.ts)', () => {
+  // The one thing here jsdom cannot exercise at all: real pdfjs-dist
+  // worker loading, real page rendering, real viewport scaling. Renders
+  // the actual printable stock template PDF generateTemplatePdf (M2-001)
+  // produces — the same file this app hands a teacher to print — through
+  // the real, production loadPdfDocument(), then runs the real
+  // detectAndReadSheet on the resulting pixels. Unfilled, so every
+  // question/roll-number group reading back blank is the expected,
+  // correct result: the meaningful assertions are that pdfjs's worker
+  // actually loaded (numPages resolves), the page rendered at a sane
+  // size, and the rendered pixels are clean/correctly-scaled enough for
+  // the real corner-detection + read pipeline to run against them at all.
+  test('renders a real, unfilled stock-template PDF page and reads it end to end', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const result = await page.evaluate((spec) => window.DetectionHarness.runPdfRenderCase(spec), {
+      questionCount: 20 as const,
+    });
+
+    expect(result.numPages).toBe(1);
+    expect(result.pageWidth).toBeGreaterThan(0);
+    expect(result.pageHeight).toBeGreaterThan(0);
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toHaveLength(20);
+    expect(result.questions).toEqual(
+      Array.from({ length: 20 }, () => ({ outcome: 'blank' as const })),
+    );
+    expect(result.rollNumberColumns.length).toBeGreaterThan(0);
+    expect(result.rollNumberColumns).toEqual(
+      result.rollNumberColumns.map(() => ({ outcome: 'blank' as const })),
+    );
+  });
+});

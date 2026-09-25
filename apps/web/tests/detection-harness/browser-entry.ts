@@ -18,7 +18,7 @@
  * that reason.
  */
 
-import type { ArucoCv, CornerName, Point } from '../../lib/scanning/corner-markers';
+import type { ArucoCv, CornerName, CvMat, Point } from '../../lib/scanning/corner-markers';
 import { CornerMarkerDetector } from '../../lib/scanning/corner-markers';
 import type { PerspectiveCv } from '../../lib/scanning/perspective-transform';
 import { DEFAULT_PADDING_RATIO, dewarpFrame } from '../../lib/scanning/perspective-transform';
@@ -43,6 +43,9 @@ import { mapTemplateGeometryToFrame } from '../../lib/templates/map-geometry-to-
 import { readAnswerSheet } from '../../lib/scanning/read-answer-sheet';
 import { buildReviewItemSpecs } from '../../lib/scanning/review-queue';
 import type { CropRect } from '../../lib/scanning/review-queue';
+import { detectAndReadSheet } from '../../lib/scanning/read-sheet-from-image';
+import { loadPdfDocument } from '../../lib/scanning/load-pdf-file';
+import { generateTemplatePdf } from '../../lib/templates/generate-pdf';
 import type { HarnessCv } from './fixtures';
 import {
   SAMPLE_RADIUS_PX,
@@ -224,6 +227,35 @@ export interface DetectionHarnessApi {
     spec: ContinuousScanStressCaseSpec,
   ) => FullStockSheetReadCaseResult[];
   runReviewCropCase: (spec: ReviewCropCaseSpec) => ReviewCropCaseResult;
+  /**
+   * M2-009: drives the real, production `detectAndReadSheet` (`lib/
+   * scanning/read-sheet-from-image.ts`) directly — the exact function
+   * `use-sheet-reader.ts` (via `readSheetFromCorners`) and the batch-import
+   * loop (`exam-scan-flow.tsx`) both call — against a tilted, rasterized
+   * sheet with no pre-known corners, standing in for an uploaded photo/
+   * scan. Deliberately NOT routed through this file's own
+   * `detectDewarpAndRead`/`readOneStockSheet`: those predate this task and
+   * are already proven by `runFullStockSheetReadCase`/
+   * `runContinuousScanStressCase`/`runReviewCropCase`; this case exists
+   * specifically to prove the *new*, separately-extracted function
+   * produces the same correct result end-to-end in a real browser, not to
+   * re-verify logic those cases already cover.
+   */
+  runDetectAndReadSheetCase: (spec: FullStockSheetReadCaseSpec) => FullStockSheetReadCaseResult;
+  /**
+   * M2-009: proves `lib/scanning/load-pdf-file.ts`'s real pdfjs-dist
+   * rendering (worker load, page render, viewport scaling) is wired up
+   * correctly in a real browser — the one thing here jsdom cannot
+   * exercise at all — and that its output is directly compatible with the
+   * real `detectAndReadSheet`. Renders the actual printable stock
+   * template PDF `generateTemplatePdf` (M2-001) produces, the same file a
+   * teacher prints, fills in, and re-scans; since this harness renders it
+   * unfilled, every bubble reading back `blank` is the correct, expected
+   * result, not a failure — the meaningful assertion is that corner
+   * detection completes and every question/roll-number group is read at
+   * all, proving the rendered pixels are clean and correctly scaled.
+   */
+  runPdfRenderCase: (spec: PdfRenderCaseSpec) => Promise<PdfRenderCaseResult>;
 }
 
 export interface ReviewCropCaseSpec {
@@ -243,6 +275,20 @@ export interface ReviewCropResult {
 export interface ReviewCropCaseResult {
   cornerDetectionComplete: boolean;
   crops: ReviewCropResult[];
+}
+
+export interface PdfRenderCaseSpec {
+  questionCount: StockTemplateQuestionCount;
+}
+
+export interface PdfRenderCaseResult {
+  numPages: number;
+  pageWidth: number;
+  pageHeight: number;
+  cornerDetectionComplete: boolean;
+  /** Every question/roll-number digit should read back `blank` — this renders the *unfilled* printable template PDF (`generateTemplatePdf`, M2-001) real bubble sheets are printed from, not a filled-in one, so "blank" here is the correct, expected outcome, not a failure. */
+  questions: QuestionResult[];
+  rollNumberColumns: QuestionResult[];
 }
 
 declare global {
@@ -356,6 +402,17 @@ function cropRegionToDataUrl(source: HTMLCanvasElement, rect: CropRect): string 
     crop.height,
   );
   return crop.toDataURL('image/png');
+}
+
+/** `cv.imshow` + `getImageData` — the one conversion every case here that needs to hand a *raw, pre-dewarp* Mat to a real ImageData-consuming function repeats inline (see `detectDewarpAndRead`'s own dewarped-side copy of this), pulled out once for `runDetectAndReadSheetCase` since unlike those, its input Mat is the tilted capture itself, not a dewarped result. */
+function matToImageData(cv: HarnessCv, mat: CvMat): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = (mat as unknown as { cols: number }).cols;
+  canvas.height = (mat as unknown as { rows: number }).rows;
+  cv.imshow(canvas, mat);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2D canvas context unavailable');
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
 }
 
 /**
@@ -538,6 +595,73 @@ const api: DetectionHarnessApi = {
     });
 
     return { cornerDetectionComplete: true, crops };
+  },
+
+  runDetectAndReadSheetCase(spec) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(spec.questionCount);
+    const { canvas, scaledMarkers } = buildStockSheetCanvas(
+      geometry,
+      spec.answers,
+      STOCK_SHEET_RENDER_SCALE,
+    );
+
+    const flatMat = sheetToMat(cv, canvas);
+    const tilted = simulateTilt(
+      cv,
+      flatMat,
+      scaledMarkers,
+      spec.tiltDeg,
+      canvas.width,
+      canvas.height,
+    );
+    flatMat.delete();
+
+    const imageData = matToImageData(cv, tilted);
+    tilted.delete();
+
+    const detected = detectAndReadSheet(cv, imageData, geometry);
+    if (detected.status === 'no-markers-detected') {
+      return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+    }
+    return {
+      cornerDetectionComplete: true,
+      questions: detected.outcome.result.questions,
+      rollNumberColumns: detected.outcome.result.rollNumberColumns,
+    };
+  },
+
+  async runPdfRenderCase(spec) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(spec.questionCount);
+
+    const pdfBytes = await generateTemplatePdf(geometry);
+    const file = new File([new Uint8Array(pdfBytes)], 'stock-template.pdf', {
+      type: 'application/pdf',
+    });
+
+    const doc = await loadPdfDocument(file);
+    const page = await doc.loadPage(1);
+
+    const detected = detectAndReadSheet(cv, page.imageData, geometry);
+    if (detected.status === 'no-markers-detected') {
+      return {
+        numPages: doc.numPages,
+        pageWidth: page.width,
+        pageHeight: page.height,
+        cornerDetectionComplete: false,
+        questions: [],
+        rollNumberColumns: [],
+      };
+    }
+    return {
+      numPages: doc.numPages,
+      pageWidth: page.width,
+      pageHeight: page.height,
+      cornerDetectionComplete: true,
+      questions: detected.outcome.result.questions,
+      rollNumberColumns: detected.outcome.result.rollNumberColumns,
+    };
   },
 };
 
