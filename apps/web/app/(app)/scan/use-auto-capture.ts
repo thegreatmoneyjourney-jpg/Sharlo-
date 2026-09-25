@@ -7,6 +7,7 @@ import type {
   CornerName,
   DetectedCorner,
 } from '@/lib/scanning/corner-markers';
+import { playCaptureFeedback } from '@/lib/scanning/capture-feedback';
 
 export interface CapturedFrame {
   imageData: ImageData;
@@ -69,6 +70,13 @@ export function useAutoCapture(
       const gateStatus = gate.update(result, now);
 
       if (gateStatus.status === 'captured') {
+        // Fires on the gate's own decision, not on whether the frame-grab
+        // below succeeds — a capture genuinely happened from the system's
+        // perspective (the gate has already moved to cooldown internally)
+        // even in the practically-unreachable case where video/canvas
+        // access fails right after.
+        playCaptureFeedback();
+
         const video = videoRef.current;
         if (video && video.videoWidth > 0) {
           const canvas = document.createElement('canvas');
