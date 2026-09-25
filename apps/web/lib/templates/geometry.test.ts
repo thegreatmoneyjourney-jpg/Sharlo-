@@ -2,9 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   BUBBLE_RADIUS_PT,
   MARKER_SIZE_PT,
+  MAX_CUSTOM_OPTIONS_PER_QUESTION,
+  MAX_CUSTOM_QUESTION_COUNT,
+  MIN_CUSTOM_OPTIONS_PER_QUESTION,
+  MIN_CUSTOM_QUESTION_COUNT,
   PAGE_HEIGHT_PT,
   PAGE_WIDTH_PT,
   STOCK_TEMPLATE_QUESTION_COUNTS,
+  TemplateLayoutTooDenseError,
+  computeCustomTemplateGeometry,
+  computeGridLayout,
   computeStockTemplateGeometry,
 } from './geometry';
 import type { BubbleGeometry, TemplateGeometry } from './geometry';
@@ -110,5 +117,94 @@ describe('corner markers', () => {
     for (const markers of markerSets.slice(1)) {
       expect(markers).toEqual(markerSets[0]);
     }
+  });
+});
+
+describe('computeGridLayout', () => {
+  it("reproduces the stock table's exact {columns, rows} for 20/50/100 — proof the two independently-defined layout paths agree, not that one calls the other", () => {
+    expect(computeGridLayout(20)).toEqual({ columns: 1, rows: 20 });
+    expect(computeGridLayout(50)).toEqual({ columns: 2, rows: 25 });
+    expect(computeGridLayout(100)).toEqual({ columns: 4, rows: 25 });
+  });
+
+  it('caps rows at 25 and grows columns for larger counts', () => {
+    expect(computeGridLayout(1)).toEqual({ columns: 1, rows: 1 });
+    expect(computeGridLayout(35)).toEqual({ columns: 2, rows: 25 });
+    expect(computeGridLayout(26)).toEqual({ columns: 2, rows: 25 });
+  });
+});
+
+describe.each([
+  { questionCount: 1, optionsPerQuestion: 2 },
+  { questionCount: 15, optionsPerQuestion: 4 },
+  { questionCount: 35, optionsPerQuestion: 5 },
+  { questionCount: 73, optionsPerQuestion: 4 },
+  { questionCount: 100, optionsPerQuestion: 3 },
+])('computeCustomTemplateGeometry(%o)', ({ questionCount, optionsPerQuestion }) => {
+  const geometry = computeCustomTemplateGeometry(questionCount, optionsPerQuestion);
+
+  it('produces exactly questionCount questions, each with optionsPerQuestion options', () => {
+    expect(geometry.questions).toHaveLength(questionCount);
+    expect(geometry.questions.map((q) => q.questionNumber)).toEqual(
+      Array.from({ length: questionCount }, (_, i) => i + 1),
+    );
+    for (const question of geometry.questions) {
+      expect(question.options).toHaveLength(optionsPerQuestion);
+      expect(question.options.map((o) => o.optionIndex)).toEqual(
+        Array.from({ length: optionsPerQuestion }, (_, i) => i),
+      );
+    }
+  });
+
+  it('places every bubble (answer + roll-number) strictly within the printable page', () => {
+    for (const bubble of allBubbles(geometry)) {
+      expect(bubble.center.x - BUBBLE_RADIUS_PT).toBeGreaterThan(0);
+      expect(bubble.center.x + BUBBLE_RADIUS_PT).toBeLessThan(PAGE_WIDTH_PT);
+      expect(bubble.center.y - BUBBLE_RADIUS_PT).toBeGreaterThan(0);
+      expect(bubble.center.y + BUBBLE_RADIUS_PT).toBeLessThan(PAGE_HEIGHT_PT);
+    }
+  });
+
+  it('never overlaps two bubbles, and leaves a real visible gap between any two adjacent ones', () => {
+    const bubbles = allBubbles(geometry);
+    const minAllowedDistance = BUBBLE_RADIUS_PT * 2.1;
+    for (let i = 0; i < bubbles.length; i++) {
+      for (let j = i + 1; j < bubbles.length; j++) {
+        expect(distance(bubbles[i], bubbles[j])).toBeGreaterThanOrEqual(minAllowedDistance);
+      }
+    }
+  });
+
+  it('uses the same marker positions as every stock variant', () => {
+    expect(geometry.markers).toEqual(computeStockTemplateGeometry(20).markers);
+  });
+
+  it('is a pure function — calling it twice produces identical geometry', () => {
+    expect(computeCustomTemplateGeometry(questionCount, optionsPerQuestion)).toEqual(geometry);
+  });
+});
+
+describe('computeCustomTemplateGeometry validation', () => {
+  it('throws on a non-integer, zero, negative, or out-of-range questionCount', () => {
+    expect(() => computeCustomTemplateGeometry(0)).toThrow();
+    expect(() => computeCustomTemplateGeometry(-5)).toThrow();
+    expect(() => computeCustomTemplateGeometry(2.5)).toThrow();
+    expect(() => computeCustomTemplateGeometry(MAX_CUSTOM_QUESTION_COUNT + 1)).toThrow();
+    expect(() => computeCustomTemplateGeometry(MIN_CUSTOM_QUESTION_COUNT - 1)).toThrow();
+  });
+
+  it('throws on a non-integer or out-of-range optionsPerQuestion', () => {
+    expect(() => computeCustomTemplateGeometry(20, 1)).toThrow();
+    expect(() => computeCustomTemplateGeometry(20, 2.5)).toThrow();
+    expect(() => computeCustomTemplateGeometry(20, MAX_CUSTOM_OPTIONS_PER_QUESTION + 1)).toThrow();
+    expect(() => computeCustomTemplateGeometry(20, MIN_CUSTOM_OPTIONS_PER_QUESTION - 1)).toThrow();
+  });
+
+  it('throws TemplateLayoutTooDenseError (not a generic error, and never a silently-broken PDF) when the combination cannot fit legibly on one page', () => {
+    // Mirrors M2-001's real tangent-bubble bug: this guard exists so an
+    // overly-ambitious custom template fails loudly at generation time
+    // instead of producing overlapping bubbles on a printed page.
+    expect(() => computeCustomTemplateGeometry(500, 8)).toThrow(TemplateLayoutTooDenseError);
+    expect(() => computeCustomTemplateGeometry(200, 6)).toThrow(TemplateLayoutTooDenseError);
   });
 });

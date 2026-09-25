@@ -15,10 +15,20 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { CornerName } from '../scanning/corner-markers';
 import { arucoDataGridForCorner, fullMarkerGrid } from './aruco-marker-patterns';
+import { MAX_CUSTOM_OPTIONS_PER_QUESTION } from './geometry';
 import type { BubbleGeometry, TemplateGeometry } from './geometry';
 
 const CORNER_NAMES: readonly CornerName[] = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
-const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
+/**
+ * Sized to `MAX_CUSTOM_OPTIONS_PER_QUESTION` (geometry.ts), not a fixed
+ * 4 — a custom template (M2-003) can have any option count up to that
+ * bound, and indexing past a fixed-length array here would print
+ * `undefined` as a bubble's letter label. Every stock template still
+ * only ever uses the first 4 (A-D).
+ */
+const OPTION_LETTERS = Array.from({ length: MAX_CUSTOM_OPTIONS_PER_QUESTION }, (_, i) =>
+  String.fromCharCode(65 + i),
+);
 
 function toPdfY(geometryY: number, pageHeightPt: number): number {
   return pageHeightPt - geometryY;

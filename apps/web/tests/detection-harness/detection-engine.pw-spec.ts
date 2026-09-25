@@ -211,6 +211,106 @@ test.describe('roll-number grid reading (FR-DETECT-04)', () => {
   });
 });
 
+test.describe('custom-template sheet boundary detection (M2-003, FR-TPL-02)', () => {
+  test('detects a straight, untilted sheet precisely', async ({ page }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runSheetBoundaryCase(spec),
+      { angleDeg: 0 },
+    );
+    expect(result.detected).toBe(true);
+    expect(result.method).toBe('polygon');
+    expect(result.maxCornerErrorPx).toBeLessThan(5);
+  });
+
+  test('detects a rotated sheet precisely (Otsu threshold, not Canny — see detect-sheet-boundary.ts)', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runSheetBoundaryCase(spec),
+      { angleDeg: 12 },
+    );
+    expect(result.detected).toBe(true);
+    expect(result.method).toBe('polygon');
+    expect(result.maxCornerErrorPx).toBeLessThan(8);
+  });
+
+  test('detects a genuine perspective trapezoid precisely (approxPolyDP, not minAreaRect)', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runSheetBoundaryCase(spec),
+      {
+        corners: [
+          { x: 130, y: 40 },
+          { x: 290, y: 55 },
+          { x: 310, y: 270 },
+          { x: 80, y: 260 },
+        ] as [
+          { x: number; y: number },
+          { x: number; y: number },
+          { x: number; y: number },
+          { x: number; y: number },
+        ],
+      },
+    );
+    expect(result.detected).toBe(true);
+    expect(result.method).toBe('polygon');
+    // minAreaRect would force a rectangular fit here and land ~40px off
+    // (measured in the scratchpad probe that validated this algorithm
+    // choice) — a tight bound proves the real shipped module is still
+    // using approxPolyDP's shape-hugging result, not silently falling
+    // back to the rectangle-only path.
+    expect(result.maxCornerErrorPx).toBeLessThan(8);
+  });
+
+  test('reports no detection (never a garbage guess) on a blank, featureless image', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate(() =>
+      window.DetectionHarness.runSheetBoundaryCase({ blank: true }),
+    );
+    // A uniform-color image has no Otsu-separable contour at all — the
+    // real "nothing found" path, exercised end to end through the real
+    // shipped module against a real (if trivial) image, not just
+    // detectSheetBoundary.test.ts's unit-tested area-fraction guard.
+    expect(result.detected).toBe(false);
+    expect(result.maxCornerErrorPx).toBeNull();
+  });
+});
+
+test.describe('custom-template bubble-grid estimation (M2-003, FR-TPL-02)', () => {
+  test('recovers a clean uniform grid confidently', async ({ page }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate((spec) => window.DetectionHarness.runBubbleGridCase(spec), {
+      rows: 6,
+      columns: 4,
+    });
+    expect(result).toEqual({ rows: 6, columns: 4, confident: true });
+  });
+
+  test('recovers a larger, denser grid confidently', async ({ page }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate((spec) => window.DetectionHarness.runBubbleGridCase(spec), {
+      rows: 20,
+      columns: 4,
+    });
+    expect(result).toEqual({ rows: 20, columns: 4, confident: true });
+  });
+
+  test('recovers a dense, narrow grid confidently', async ({ page }) => {
+    await gotoHarness(page);
+    const result = await page.evaluate((spec) => window.DetectionHarness.runBubbleGridCase(spec), {
+      rows: 25,
+      columns: 2,
+    });
+    expect(result).toEqual({ rows: 25, columns: 2, confident: true });
+  });
+});
+
 test.describe('stock template corner markers are actually detectable (M2-001, FR-TPL-01)', () => {
   test('all 4 corner markers on every stock question-count variant detect at their exact geometry.ts positions', async ({
     page,
