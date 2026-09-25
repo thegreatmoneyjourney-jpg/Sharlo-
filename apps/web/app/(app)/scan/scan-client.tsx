@@ -5,6 +5,7 @@ import { loadOpenCv } from '@/lib/scanning/opencv-loader';
 import { useCameraStream } from './use-camera-stream';
 import { useCornerDetection } from './use-corner-detection';
 import { useAutoCapture } from './use-auto-capture';
+import { useManualCapture } from './use-manual-capture';
 import { useDewarp } from './use-dewarp';
 import type { CameraErrorReason } from '@/lib/scanning/camera';
 import type { DetectedCorner } from '@/lib/scanning/corner-markers';
@@ -50,6 +51,9 @@ const CAMERA_ERROR_COPY: Record<CameraErrorReason, { message: string; canRetry: 
  * (M1-005). Grid sampling/scoring and real capture feedback (beep/
  * vibration) are M1-006 onward; this page detects, stabilizes,
  * captures, and dewarps, but doesn't yet read or score any bubbles.
+ * Also covers the manual "Take Photo" fallback (M1-008) — always
+ * available once the camera is live, independent of the auto-capture
+ * gate's own state, for when its timing isn't reliable.
  */
 export default function ScanClient() {
   const [openCvPhase, setOpenCvPhase] = useState<OpenCvPhase>('loading');
@@ -57,11 +61,15 @@ export default function ScanClient() {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const thumbnailRef = useRef<HTMLCanvasElement>(null);
   const dewarpedRef = useRef<HTMLCanvasElement>(null);
+  const manualThumbnailRef = useRef<HTMLCanvasElement>(null);
+  const manualDewarpedRef = useRef<HTMLCanvasElement>(null);
   const camera = useCameraStream(videoRef);
   const ready = openCvPhase === 'ready' && camera.state.status === 'live';
   const autoCapture = useAutoCapture(videoRef);
   const { result: corners, measuredFps } = useCornerDetection(videoRef, ready, autoCapture.onFrame);
+  const manualCapture = useManualCapture(videoRef, corners);
   const dewarped = useDewarp(autoCapture.capturedFrame);
+  const manualDewarped = useDewarp(manualCapture.capturedFrame);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,6 +169,47 @@ export default function ScanClient() {
     fullCtx.putImageData(dewarped.imageData, 0, 0);
     ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
   }, [dewarped]);
+
+  // Same rendering as the two effects above, for the manual-capture
+  // path (M1-008) — a separate, independent thumbnail pair rather than
+  // merged into the auto-capture ones, so each path's own result stays
+  // distinguishable proof it works on its own.
+  useEffect(() => {
+    const canvas = manualThumbnailRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!manualCapture.capturedFrame) return;
+
+    const { imageData } = manualCapture.capturedFrame;
+    const full = document.createElement('canvas');
+    full.width = imageData.width;
+    full.height = imageData.height;
+    const fullCtx = full.getContext('2d');
+    if (!fullCtx) return;
+    fullCtx.putImageData(imageData, 0, 0);
+    ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
+  }, [manualCapture.capturedFrame]);
+
+  useEffect(() => {
+    const canvas = manualDewarpedRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!manualDewarped) return;
+
+    const full = document.createElement('canvas');
+    full.width = manualDewarped.width;
+    full.height = manualDewarped.height;
+    const fullCtx = full.getContext('2d');
+    if (!fullCtx) return;
+    fullCtx.putImageData(manualDewarped.imageData, 0, 0);
+    ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
+  }, [manualDewarped]);
 
   if (openCvPhase === 'error') {
     return (
@@ -263,6 +312,47 @@ export default function ScanClient() {
           )}
         </div>
       )}
+      {manualCapture.capturedFrame && (
+        <div className="absolute top-2 right-2 flex flex-col items-end gap-1" role="status">
+          <span className="rounded bg-violet-600/90 px-2 py-1 font-mono text-xs text-white">
+            Manual capture
+          </span>
+          <canvas
+            ref={manualThumbnailRef}
+            width={90}
+            height={117}
+            className="rounded border border-white/50"
+          />
+          {manualDewarped && (
+            <>
+              <span className="rounded bg-sky-600/90 px-2 py-1 font-mono text-xs text-white">
+                Dewarped
+              </span>
+              <canvas
+                ref={manualDewarpedRef}
+                width={90}
+                height={117}
+                className="rounded border border-white/50"
+              />
+            </>
+          )}
+        </div>
+      )}
+      {/* FR-SCAN-04: always available once the camera is live, regardless
+          of the auto-capture gate's own state — the explicit fallback for
+          when its timing isn't reliable (iOS Safari, per this task's own
+          done-when criterion). Disabled rather than hidden when corners
+          aren't fully detected yet, since there's nothing valid to hand
+          to the dewarp step without them — same baseline requirement
+          auto-capture has, this button only removes the stability wait. */}
+      <button
+        type="button"
+        onClick={manualCapture.capture}
+        disabled={!manualCapture.canCapture}
+        className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-white/90 px-6 py-3 text-sm font-medium text-zinc-900 shadow-lg disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Take Photo
+      </button>
     </div>
   );
 }

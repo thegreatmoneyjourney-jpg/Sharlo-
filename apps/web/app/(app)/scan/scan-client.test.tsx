@@ -19,12 +19,14 @@ const {
   useCameraStreamMock,
   useCornerDetectionMock,
   useAutoCaptureMock,
+  useManualCaptureMock,
   useDewarpMock,
 } = vi.hoisted(() => ({
   loadOpenCvMock: vi.fn(),
   useCameraStreamMock: vi.fn(),
   useCornerDetectionMock: vi.fn(),
   useAutoCaptureMock: vi.fn(),
+  useManualCaptureMock: vi.fn(),
   useDewarpMock: vi.fn(),
 }));
 
@@ -53,6 +55,13 @@ vi.mock('./use-auto-capture', () => ({
   useAutoCapture: useAutoCaptureMock,
 }));
 
+// Same rationale again: the real hook calls playCaptureFeedback and
+// captureVideoFrame against a real <video>/canvas. See
+// docs/reports/SHARLO-M1-008.md.
+vi.mock('./use-manual-capture', () => ({
+  useManualCapture: useManualCaptureMock,
+}));
+
 // Same rationale again: the real hook runs cv.warpPerspective against a
 // real captured frame, needs a real browser. See
 // docs/reports/SHARLO-M1-005.md.
@@ -74,6 +83,11 @@ beforeEach(() => {
     capturedFrame: null,
     onFrame: vi.fn(),
   });
+  useManualCaptureMock.mockReturnValue({
+    capturedFrame: null,
+    canCapture: false,
+    capture: vi.fn(),
+  });
   useDewarpMock.mockReturnValue(null);
 });
 
@@ -83,6 +97,7 @@ afterEach(() => {
   useCameraStreamMock.mockReset();
   useCornerDetectionMock.mockReset();
   useAutoCaptureMock.mockReset();
+  useManualCaptureMock.mockReset();
   useDewarpMock.mockReset();
 });
 
@@ -332,5 +347,96 @@ describe('ScanClient', () => {
     });
     expect(screen.queryByText(/Hold steady/)).not.toBeInTheDocument();
     expect(screen.queryByText('Captured')).not.toBeInTheDocument();
+  });
+
+  it('always shows the manual "Take Photo" button once ready, regardless of auto-capture status', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'stabilizing',
+      progress: 0.5,
+      capturedFrame: null,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /take photo/i })).toBeInTheDocument();
+    });
+  });
+
+  it('disables the manual capture button when corners are not fully detected', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: null,
+      canCapture: false,
+      capture: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    const button = await screen.findByRole('button', { name: /take photo/i });
+    expect(button).toBeDisabled();
+  });
+
+  it('enables the manual capture button once corners are fully detected, and clicking it calls capture()', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    const capture = vi.fn();
+    useManualCaptureMock.mockReturnValue({ capturedFrame: null, canCapture: true, capture });
+
+    render(<ScanClient />);
+
+    const button = await screen.findByRole('button', { name: /take photo/i });
+    expect(button).not.toBeDisabled();
+
+    button.click();
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the latest detection result into useManualCapture', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    const detectionResult = { complete: false, found: {} };
+    useCornerDetectionMock.mockReturnValue({ result: detectionResult, measuredFps: null });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(useManualCaptureMock).toHaveBeenCalledWith(expect.anything(), detectionResult);
+    });
+  });
+
+  it('shows a manual capture indicator once one is available, independent of auto-capture', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      canCapture: true,
+      capture: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Manual capture')).toBeInTheDocument();
+    });
+    // Auto-capture's own "Captured" badge is a distinct indicator and
+    // should not appear just because a manual capture happened.
+    expect(screen.queryByText('Captured')).not.toBeInTheDocument();
+  });
+
+  it('does not show a manual capture indicator before one is available', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(document.querySelector('video')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Manual capture')).not.toBeInTheDocument();
   });
 });

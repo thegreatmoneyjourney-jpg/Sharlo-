@@ -2,18 +2,12 @@ import { useCallback, useState } from 'react';
 import type { RefObject } from 'react';
 import { StabilityGate } from '@/lib/scanning/stability-gate';
 import type { StabilityGateConfig, StabilityGateStatus } from '@/lib/scanning/stability-gate';
-import type {
-  CornerDetectionResult,
-  CornerName,
-  DetectedCorner,
-} from '@/lib/scanning/corner-markers';
+import type { CornerDetectionResult } from '@/lib/scanning/corner-markers';
 import { playCaptureFeedback } from '@/lib/scanning/capture-feedback';
+import { captureVideoFrame } from './capture-video-frame';
+import type { CapturedFrame } from './capture-video-frame';
 
-export interface CapturedFrame {
-  imageData: ImageData;
-  corners: Record<CornerName, DetectedCorner>;
-  capturedAt: number;
-}
+export type { CapturedFrame } from './capture-video-frame';
 
 export interface AutoCaptureState {
   status: StabilityGateStatus['status'];
@@ -78,24 +72,10 @@ export function useAutoCapture(
         playCaptureFeedback();
 
         const video = videoRef.current;
-        if (video && video.videoWidth > 0) {
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0);
-            setState({
-              status: 'captured',
-              progress: 1,
-              capturedFrame: {
-                imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
-                corners: gateStatus.corners,
-                capturedAt: now,
-              },
-            });
-            return;
-          }
+        const frame = video ? captureVideoFrame(video, gateStatus.corners, now) : null;
+        if (frame) {
+          setState({ status: 'captured', progress: 1, capturedFrame: frame });
+          return;
         }
       }
 
