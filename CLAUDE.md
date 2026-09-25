@@ -8,13 +8,13 @@ Sharlo is a mobile-first SaaS web app that lets teachers grade multiple-choice b
 
 ## Where things are
 
-| Need to...                                                                    | Go to                                                                            |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Understand a feature requirement or its acceptance criteria                   | `docs/SRS.md` — every requirement has an ID (`FR-*`, `NFR-*`)                    |
-| Understand how something is/should be built, the data model, the threat model | `docs/ARCHITECTURE.md`                                                           |
-| Understand _why_ a technical decision was made                                | `docs/ADR/` — one file per decision                                              |
-| Find the next thing to work on                                                | `docs/TASKS.md` — milestones M0–M7, task IDs, dependencies, "done when" criteria |
-| Write up completed work                                                       | `docs/reports/<task-id>.md` — one file per completed task, see format below      |
+| Need to...                                                                    | Go to                                                                                       |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Understand a feature requirement or its acceptance criteria                   | `docs/SRS.md` — every requirement has an ID (`FR-*`, `NFR-*`)                               |
+| Understand how something is/should be built, the data model, the threat model | `docs/ARCHITECTURE.md`                                                                      |
+| Understand _why_ a technical decision was made                                | `docs/ADR/` — one file per decision                                                         |
+| Find the next thing to work on                                                | `docs/TASKS.md` — milestones M0–M12 + Backlog, task IDs, dependencies, "done when" criteria |
+| Write up completed work                                                       | `docs/reports/<task-id>.md` — one file per completed task, see format below                 |
 
 **This repo's docs are the source of truth for scope.** If you find yourself about to build something not traceable to a requirement ID, or about to skip/simplify something that is, stop and flag it in a report instead of deciding unilaterally — see "Stop conditions" below.
 
@@ -35,6 +35,9 @@ Sharlo is a mobile-first SaaS web app that lets teachers grade multiple-choice b
 - **ADR-0005** (Encryption Passphrase + Recovery Key) and **ADR-0010** (School-plan dual-encryption, school-admin-owned Drive storage) are both **Accepted** — confirmed by the founder in `docs/reports/SHARLO-M0-007.md`. Nothing in M1–M4 is decision-blocked. ADR-0005 gained an addendum (proactive 7-day/30-day Recovery Key reminders, email + in-app — see FR-AUTH-09, ADR-0011) and ADR-0010 gained a concrete storage mechanism (Shared Drive preferred, folder fallback, Google Picker access-grant flow) — read both ADRs in full before touching auth/encryption or School-plan code, the summaries above aren't enough to implement against.
 - **Still open, non-blocking:** admin-subdomain network-layer hardening beyond the spec's 2FA baseline (`docs/ARCHITECTURE.md` §11, task M7-007) — not yet confirmed or declined by the founder. Not needed until M7.
 - **Pending a number, not a design:** UAE/Saudi/Qatar pricing-tier placement — research and a recommendation are in `docs/reports/SHARLO-M0-007.md`; the founder hasn't locked final numbers yet. Since pricing is admin-configurable at runtime (non-negotiable above), this never blocks engineering work — just don't treat the SRS's Tier-1 seed values for those three countries as final when M4's pricing seed data is loaded.
+- **M1 (Scanning Engine Core) is done, confirmed by the founder, M2 authorized** — see `docs/reports/SHARLO-M1-010.md` and Addendum 3 (`docs/reports/SHARLO-M0-011.md`). One follow-up, `M1-011` (real-device accuracy validation against real printed/hand-filled/scanned sheets — a Claude Code session can't do this independently), does **not** block M2 or later milestones but **does** block `M7-011`/public launch — don't treat M1 as fully closed-out for launch purposes until `M1-011`'s report exists with every NFR-ACC target met or an explicit founder-accepted mitigation.
+- **ADR-0014 ("no AI/LLM on student data") is still in force — ADR-0016 is not an exception to it, it's a separate, distinct decision.** ADR-0016 (Addendum 3) approves AI-assisted **support-reply drafting only** — reads a support ticket + a founder-maintained generic knowledge base, produces a draft that's _never sent without an explicit human send action_, and runs ticket content through a mandatory PII-sanitization pass before any third-party API call (`NFR-SEC-15`). If a future task proposal reaches for "use AI" anywhere near student data, exam content, or grading, that's still squarely what ADR-0014 forbids — flag it, don't build it.
+- **Every integration credential (Resend, Paddle, Bank Alfalah, the ADR-0016 AI provider, any future one) is stored via the encrypted `integration_credentials` table (`ADR-0017`), never a hardcoded env var.** `M0-010` has the minimal store; `M5-012` has the polished admin UI. Don't reintroduce a `process.env.SOME_API_KEY` read for a rotatable integration secret — that's a regression against this ADR, not a harmless shortcut.
 
 If a future report changes any of the above, update it here too — this file should always reflect the current state, not the history of how it got there (the reports are where history lives).
 
