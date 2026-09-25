@@ -5,6 +5,7 @@ import { loadOpenCv } from '@/lib/scanning/opencv-loader';
 import { useCameraStream } from './use-camera-stream';
 import { useCornerDetection } from './use-corner-detection';
 import { useAutoCapture } from './use-auto-capture';
+import { useDewarp } from './use-dewarp';
 import type { CameraErrorReason } from '@/lib/scanning/camera';
 import type { DetectedCorner } from '@/lib/scanning/corner-markers';
 
@@ -43,22 +44,24 @@ const CAMERA_ERROR_COPY: Record<CameraErrorReason, { message: string; canRetry: 
 /**
  * Client-only scan page body. Covers OpenCV.js lazy-load (M1-001), the
  * camera capture pipeline (M1-002), corner marker detection running
- * continuously against the live frames (M1-003), and the stability gate
- * + auto-capture trigger (M1-004): once all 4 corners hold steady for
- * ~500ms, the current frame is grabbed automatically. Acting further on
- * a captured frame — perspective transform, grid sampling, real capture
- * feedback (beep/vibration) — is M1-005 onward; this page detects,
- * stabilizes, and captures, but doesn't yet dewarp or score anything.
+ * continuously against the live frames (M1-003), the stability gate +
+ * auto-capture trigger (M1-004), and the perspective transform that
+ * dewarps a captured frame to a normalized rectangle once it's ready
+ * (M1-005). Grid sampling/scoring and real capture feedback (beep/
+ * vibration) are M1-006 onward; this page detects, stabilizes,
+ * captures, and dewarps, but doesn't yet read or score any bubbles.
  */
 export default function ScanClient() {
   const [openCvPhase, setOpenCvPhase] = useState<OpenCvPhase>('loading');
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const thumbnailRef = useRef<HTMLCanvasElement>(null);
+  const dewarpedRef = useRef<HTMLCanvasElement>(null);
   const camera = useCameraStream(videoRef);
   const ready = openCvPhase === 'ready' && camera.state.status === 'live';
   const autoCapture = useAutoCapture(videoRef);
   const { result: corners, measuredFps } = useCornerDetection(videoRef, ready, autoCapture.onFrame);
+  const dewarped = useDewarp(autoCapture.capturedFrame);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +138,29 @@ export default function ScanClient() {
     fullCtx.putImageData(imageData, 0, 0);
     ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
   }, [autoCapture.capturedFrame]);
+
+  // Renders the M1-005 perspective-transform output once it's ready —
+  // visual proof the dewarp actually ran against a real captured frame
+  // and produced a normalized rectangle, not just that the Mat pipeline
+  // completed without throwing. Acting on this rectified image (grid
+  // sampling, scoring) is M1-006 onward.
+  useEffect(() => {
+    const canvas = dewarpedRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!dewarped) return;
+
+    const full = document.createElement('canvas');
+    full.width = dewarped.width;
+    full.height = dewarped.height;
+    const fullCtx = full.getContext('2d');
+    if (!fullCtx) return;
+    fullCtx.putImageData(dewarped.imageData, 0, 0);
+    ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
+  }, [dewarped]);
 
   if (openCvPhase === 'error') {
     return (
@@ -222,6 +248,19 @@ export default function ScanClient() {
             height={117}
             className="rounded border border-white/50"
           />
+          {dewarped && (
+            <>
+              <span className="rounded bg-sky-600/90 px-2 py-1 font-mono text-xs text-white">
+                Dewarped
+              </span>
+              <canvas
+                ref={dewarpedRef}
+                width={90}
+                height={117}
+                className="rounded border border-white/50"
+              />
+            </>
+          )}
         </div>
       )}
     </div>

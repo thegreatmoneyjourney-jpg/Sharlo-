@@ -14,13 +14,19 @@ const FAKE_CAPTURED_FRAME = {
   capturedAt: 1000,
 } as unknown as CapturedFrame;
 
-const { loadOpenCvMock, useCameraStreamMock, useCornerDetectionMock, useAutoCaptureMock } =
-  vi.hoisted(() => ({
-    loadOpenCvMock: vi.fn(),
-    useCameraStreamMock: vi.fn(),
-    useCornerDetectionMock: vi.fn(),
-    useAutoCaptureMock: vi.fn(),
-  }));
+const {
+  loadOpenCvMock,
+  useCameraStreamMock,
+  useCornerDetectionMock,
+  useAutoCaptureMock,
+  useDewarpMock,
+} = vi.hoisted(() => ({
+  loadOpenCvMock: vi.fn(),
+  useCameraStreamMock: vi.fn(),
+  useCornerDetectionMock: vi.fn(),
+  useAutoCaptureMock: vi.fn(),
+  useDewarpMock: vi.fn(),
+}));
 
 vi.mock('@/lib/scanning/opencv-loader', () => ({
   loadOpenCv: loadOpenCvMock,
@@ -47,6 +53,13 @@ vi.mock('./use-auto-capture', () => ({
   useAutoCapture: useAutoCaptureMock,
 }));
 
+// Same rationale again: the real hook runs cv.warpPerspective against a
+// real captured frame, needs a real browser. See
+// docs/reports/SHARLO-M1-005.md.
+vi.mock('./use-dewarp', () => ({
+  useDewarp: useDewarpMock,
+}));
+
 function mockCamera(state: CameraState, retry = vi.fn()) {
   useCameraStreamMock.mockReturnValue({ state, retry });
 }
@@ -61,6 +74,7 @@ beforeEach(() => {
     capturedFrame: null,
     onFrame: vi.fn(),
   });
+  useDewarpMock.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -69,6 +83,7 @@ afterEach(() => {
   useCameraStreamMock.mockReset();
   useCornerDetectionMock.mockReset();
   useAutoCaptureMock.mockReset();
+  useDewarpMock.mockReset();
 });
 
 describe('ScanClient', () => {
@@ -240,6 +255,64 @@ describe('ScanClient', () => {
     await waitFor(() => {
       expect(screen.getByText('Captured')).toBeInTheDocument();
     });
+  });
+
+  it('passes the captured frame into useDewarp', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'captured',
+      progress: 1,
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(useDewarpMock).toHaveBeenCalledWith(FAKE_CAPTURED_FRAME);
+    });
+  });
+
+  it('shows a dewarped preview once one is available', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'captured',
+      progress: 1,
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      onFrame: vi.fn(),
+    });
+    useDewarpMock.mockReturnValue({
+      imageData: FAKE_CAPTURED_FRAME.imageData,
+      width: 2,
+      height: 2,
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Dewarped')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show a dewarped preview before one is available, even while captured', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'captured',
+      progress: 1,
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      onFrame: vi.fn(),
+    });
+    useDewarpMock.mockReturnValue(null);
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Captured')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Dewarped')).not.toBeInTheDocument();
   });
 
   it('shows neither stabilizing progress nor a captured indicator while still searching', async () => {
