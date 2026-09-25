@@ -22,6 +22,19 @@ interface StudentResult {
   scored: ScoredSheet;
 }
 
+/**
+ * M2-008 (FR-DETECT-05): a freshly-read capture whose roll number matches
+ * an already-saved student, held here rather than added straight to
+ * `students`/`reviewQueue` — "warn... before it's saved" means exactly
+ * that: nothing about this capture is committed until the teacher
+ * explicitly confirms or cancels it.
+ */
+interface PendingDuplicate {
+  rollNumber: string;
+  newStudent: StudentResult;
+  newQueueItems: ReviewQueueItem[];
+}
+
 type Mode =
   | { phase: 'capture-key'; error?: string }
   | {
@@ -30,6 +43,7 @@ type Mode =
       students: StudentResult[];
       reviewQueue: ReviewQueueItem[];
       showReviewQueue: boolean;
+      pendingDuplicate: PendingDuplicate | null;
     };
 
 const SECONDARY_BUTTON_CLASSES =
@@ -126,6 +140,7 @@ export function ExamScanFlow({
             students: [],
             reviewQueue: [],
             showReviewQueue: false,
+            pendingDuplicate: null,
           };
         }
         return {
@@ -133,6 +148,11 @@ export function ExamScanFlow({
           error: `Question${unresolved.length > 1 ? 's' : ''} ${unresolved.join(', ')} ${unresolved.length > 1 ? "weren't" : "wasn't"} clearly marked on the key sheet — hold it steady and scan again.`,
         };
       }
+
+      // A decision on the last capture is still pending — ignore further
+      // captures rather than letting a second one silently interfere with
+      // (or get lost behind) the one the teacher hasn't resolved yet.
+      if (prev.pendingDuplicate) return prev;
 
       const studentId = capturedFrame.capturedAt;
       const rollNumber = readResult.rollRead.status === 'read' ? readResult.rollRead.value : null;
@@ -159,6 +179,16 @@ export function ExamScanFlow({
               kind: 'roll-number',
             },
       );
+
+      // FR-DETECT-05: same roll number already scanned for this exam ->
+      // hold the capture for confirmation rather than saving it straight
+      // away. Roll-number-only matching, not FR-DETECT-05's own "or a
+      // matching visual fingerprint" alternative — see
+      // docs/reports/SHARLO-M2-008.md's Flags for why that's out of
+      // scope here rather than half-built.
+      if (rollNumber !== null && prev.students.some((s) => s.rollNumber === rollNumber)) {
+        return { ...prev, pendingDuplicate: { rollNumber, newStudent, newQueueItems } };
+      }
 
       return {
         ...prev,
@@ -229,6 +259,31 @@ export function ExamScanFlow({
         reviewQueue: prev.reviewQueue.filter((queued) => queued.id !== item.id),
       };
     });
+  }
+
+  /** FR-DETECT-05's "teacher can override with 'rescan intentionally'" — replaces the prior entry for that roll number with the new capture, since a rescan corrects that student's result rather than adding a second, conflicting one. Also drops the superseded entry's own review-queue items, if any: they referred to a scan that no longer exists. */
+  function confirmRescan() {
+    setMode((prev) => {
+      if (prev.phase !== 'scan-students' || !prev.pendingDuplicate) return prev;
+      const { newStudent, newQueueItems } = prev.pendingDuplicate;
+      const supersededId = prev.students.find((s) => s.rollNumber === newStudent.rollNumber)?.id;
+      return {
+        ...prev,
+        students: [...prev.students.filter((s) => s.id !== supersededId), newStudent],
+        reviewQueue: [
+          ...prev.reviewQueue.filter((item) => item.studentId !== supersededId),
+          ...newQueueItems,
+        ],
+        pendingDuplicate: null,
+      };
+    });
+  }
+
+  /** Discards the pending capture entirely — nothing about it was ever saved, matching FR-DETECT-05's "triggers a warning before it's saved." */
+  function cancelRescan() {
+    setMode((prev) =>
+      prev.phase === 'scan-students' ? { ...prev, pendingDuplicate: null } : prev,
+    );
   }
 
   if (camera.state.status === 'error') {
@@ -331,6 +386,36 @@ export function ExamScanFlow({
               )
             }
           />
+        )}
+        {mode.phase === 'scan-students' && mode.pendingDuplicate && (
+          <div
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/95 p-6 text-center text-white"
+            role="alertdialog"
+            aria-label="Duplicate roll number detected"
+          >
+            <p className="max-w-xs text-sm">
+              Roll #{mode.pendingDuplicate.rollNumber} was already scanned for this exam.
+            </p>
+            <p className="max-w-xs text-xs text-zinc-400">
+              Rescanning will replace that student&rsquo;s saved result with this new one.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={cancelRescan}
+                className="rounded border border-zinc-600 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRescan}
+                className="rounded bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700"
+              >
+                Rescan intentionally
+              </button>
+            </div>
+          </div>
         )}
       </div>
       {mode.phase === 'scan-students' && mode.students.length > 0 && (
