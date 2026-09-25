@@ -12,7 +12,7 @@ import { useAutoCapture } from '../../scan/use-auto-capture';
 import { useManualCapture } from '../../scan/use-manual-capture';
 import type { CapturedFrame } from '../../scan/capture-video-frame';
 import { useSheetReader } from './use-sheet-reader';
-import { ReviewQueuePanel } from './review-queue-panel';
+import { ReviewQueuePanel, purgeExpiredCrops } from './review-queue-panel';
 import type { ReviewQueueItem } from './review-queue-panel';
 
 /** One scanned student sheet, accumulated across the whole scan-students session (M2-006) — `scored` is re-derived via `rescoreSheet` whenever a review-queue item for this student is resolved, never hand-edited in place. */
@@ -34,6 +34,21 @@ type Mode =
 
 const SECONDARY_BUTTON_CLASSES =
   'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
+
+/**
+ * M2-007 (FR-REVIEW-03, NFR-SEC-05): "purged on a short timer / session
+ * end." Session end is already covered for free — the whole review queue
+ * lives in this component's own state, gone the instant it unmounts
+ * ("End exam" or a tab close). No numeric window is specified anywhere in
+ * docs/SRS.md or docs/ARCHITECTURE.md, so 15 minutes is a judgment call,
+ * not a confirmed figure — long enough that a teacher who steps away
+ * mid-review (answering a knock at the classroom door) doesn't lose their
+ * place, short enough to be a real control rather than a token gesture.
+ * Flagged in docs/reports/SHARLO-M2-007.md for founder confirmation.
+ */
+const REVIEW_IMAGE_RETENTION_MS = 15 * 60 * 1000;
+/** How often the purge check runs — frequent enough that no image lingers materially past its window, cheap enough (a length-N array scan over what's realistically a handful of open items) not to matter. */
+const RETENTION_CHECK_INTERVAL_MS = 30 * 1000;
 
 /**
  * FR-EXAM-03's scan flow — reuses the exact M1 camera/corner-detection/
@@ -124,11 +139,13 @@ export function ExamScanFlow({
       const scored = scoreSheet(readResult.result.questions, prev.key);
       const newStudent: StudentResult = { id: studentId, rollNumber, scored };
 
+      const addedAt = Date.now();
       const newQueueItems: ReviewQueueItem[] = readResult.reviewCrops.map((crop) =>
         crop.kind === 'question'
           ? {
               id: `${studentId}-q${crop.questionNumber}`,
               studentId,
+              addedAt,
               cropDataUrl: crop.cropDataUrl,
               kind: 'question',
               questionNumber: crop.questionNumber,
@@ -137,6 +154,7 @@ export function ExamScanFlow({
           : {
               id: `${studentId}-roll`,
               studentId,
+              addedAt,
               cropDataUrl: crop.cropDataUrl,
               kind: 'roll-number',
             },
@@ -149,6 +167,31 @@ export function ExamScanFlow({
       };
     });
   }, [readResult, capturedFrame, geometry]);
+
+  // M2-007 (FR-REVIEW-03): purges each review item's crop image once it's
+  // sat unresolved past REVIEW_IMAGE_RETENTION_MS, regardless of whether
+  // the panel is open — this is about not *retaining* the data, not just
+  // not *displaying* it, so the check runs on its own timer rather than
+  // waiting for some other render to trigger it. Never drops the item
+  // itself: a flagged question that quietly vanished because nobody
+  // opened the queue in time would be exactly the "silently dropped"
+  // failure this whole feature exists to prevent (see CLAUDE.md's
+  // never-guess/never-drop trust guarantee).
+  useEffect(() => {
+    if (mode.phase !== 'scan-students') return;
+    const intervalId = setInterval(() => {
+      setMode((prev) => {
+        if (prev.phase !== 'scan-students') return prev;
+        const reviewQueue = purgeExpiredCrops(
+          prev.reviewQueue,
+          Date.now(),
+          REVIEW_IMAGE_RETENTION_MS,
+        );
+        return reviewQueue === prev.reviewQueue ? prev : { ...prev, reviewQueue };
+      });
+    }, RETENTION_CHECK_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [mode.phase]);
 
   function resolveQuestionItem(
     item: Extract<ReviewQueueItem, { kind: 'question' }>,
