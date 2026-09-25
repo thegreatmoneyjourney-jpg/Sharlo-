@@ -11,6 +11,13 @@ next-env.d.ts
 # Generated build-time vendor assets (apps/web/scripts/copy-opencv-asset.mjs)
 apps/web/public/vendor/
 
+# Generated detection-harness bundle (apps/web/scripts/build-detection-harness.mjs)
+apps/web/tests/detection-harness/.generated/
+
+# Playwright test artifacts
+apps/web/test-results/
+apps/web/playwright-report/
+
 # Env files — never commit real secrets
 .env
 .env.local

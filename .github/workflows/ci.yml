@@ -48,6 +48,38 @@ jobs:
       - name: Build
         run: npm run build
 
+  detection-harness:
+    name: Detection engine test harness (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # M1-010 (docs/reports/SHARLO-M1-010.md): runs the real M1-003
+      # through M1-009 detection pipeline against synthetic fixtures in a
+      # real headless Chromium — OpenCV WASM, canvas rendering, and ArUco
+      # decoding can't be faithfully exercised in jsdom (see each
+      # module's own *.test.ts for why those stay mocked/hand-built-data
+      # unit tests instead). This sandbox's own pre-installed Chromium
+      # doesn't help a fresh runner here — every run needs its own
+      # install.
+      - name: Install Playwright's Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Runs `pretest:e2e` first (npm lifecycle convention, same as this
+      # package's existing predev/prebuild) to build the harness's
+      # browser bundle before Playwright starts it.
+      - name: Run detection engine test harness
+        run: npm run test:e2e
+        working-directory: apps/web
+
   docker-build:
     name: Docker images build
     runs-on: ubuntu-latest
