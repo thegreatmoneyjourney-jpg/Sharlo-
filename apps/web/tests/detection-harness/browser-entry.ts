@@ -201,6 +201,12 @@ export interface FullStockSheetReadCaseResult {
   rollNumberColumns: QuestionResult[];
 }
 
+export interface ContinuousScanStressCaseSpec {
+  questionCount: StockTemplateQuestionCount;
+  /** Number of distinct sheets to read in sequence within a single cv/page session — M2-005's "scan a full class of 30+ sheets back-to-back" done-when criterion, automated for everything downstream of a captured frame (see this case's own handler doc comment for what it does and doesn't cover). */
+  sheetCount: number;
+}
+
 export interface DetectionHarnessApi {
   cvReady: boolean;
   runCornerDetectionCase: (tiltDeg: number) => CornerDetectionCaseResult;
@@ -212,6 +218,9 @@ export interface DetectionHarnessApi {
   runSheetBoundaryCase: (spec: SheetBoundaryCaseSpec) => SheetBoundaryCaseResult;
   runBubbleGridCase: (spec: BubbleGridCaseSpec) => EstimatedBubbleGrid;
   runFullStockSheetReadCase: (spec: FullStockSheetReadCaseSpec) => FullStockSheetReadCaseResult;
+  runContinuousScanStressCase: (
+    spec: ContinuousScanStressCaseSpec,
+  ) => FullStockSheetReadCaseResult[];
 }
 
 declare global {
@@ -219,6 +228,75 @@ declare global {
     DetectionHarness: DetectionHarnessApi;
     cv?: unknown;
   }
+}
+
+/**
+ * The single-sheet detect -> dewarp -> map -> read pipeline, factored out
+ * of `runFullStockSheetReadCase` so `runContinuousScanStressCase` (M2-005)
+ * can call the exact same code path many times in a row rather than a
+ * second, drifting copy of it.
+ */
+function readOneStockSheet(
+  cv: HarnessCv,
+  geometry: ReturnType<typeof computeStockTemplateGeometry>,
+  answers: StockSheetAnswers,
+  tiltDeg: number,
+): FullStockSheetReadCaseResult {
+  const { canvas, scaledMarkers } = buildStockSheetCanvas(
+    geometry,
+    answers,
+    STOCK_SHEET_RENDER_SCALE,
+  );
+
+  const flatMat = sheetToMat(cv, canvas);
+  const tilted = simulateTilt(cv, flatMat, scaledMarkers, tiltDeg, canvas.width, canvas.height);
+  flatMat.delete();
+
+  const detector = new CornerMarkerDetector(cv as unknown as ArucoCv);
+  const detection = detector.detect(tilted);
+  if (!detection.complete) {
+    tilted.delete();
+    return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+  }
+
+  const dewarped = dewarpFrame(cv as unknown as PerspectiveCv, tilted, detection.corners);
+  tilted.delete();
+
+  const dewarpedCanvas = document.createElement('canvas');
+  dewarpedCanvas.width = dewarped.width;
+  dewarpedCanvas.height = dewarped.height;
+  (cv as unknown as PerspectiveCv).imshow(dewarpedCanvas, dewarped.mat);
+  dewarped.mat.delete();
+
+  const dewarpedCtx = dewarpedCanvas.getContext('2d');
+  if (!dewarpedCtx) throw new Error('2D canvas context unavailable');
+  const dewarpedImageData = dewarpedCtx.getImageData(0, 0, dewarped.width, dewarped.height);
+
+  const mappedGeometry = mapTemplateGeometryToFrame(
+    geometry,
+    { width: dewarped.width, height: dewarped.height },
+    DEFAULT_PADDING_RATIO,
+  );
+  const result = readAnswerSheet(dewarpedImageData, mappedGeometry);
+
+  return {
+    cornerDetectionComplete: true,
+    questions: result.questions,
+    rollNumberColumns: result.rollNumberColumns,
+  };
+}
+
+/**
+ * A different, fully-determined answer pattern per sheet index — a real
+ * continuous session never reads the identical sheet twice in a row, so
+ * `runContinuousScanStressCase` shouldn't either. Deterministic (not
+ * random) so a failure at sheet N is exactly reproducible.
+ */
+function answersForStressIndex(questionCount: number, index: number): StockSheetAnswers {
+  return {
+    questionAnswers: Array.from({ length: questionCount }, (_, q) => (q + index) % 4),
+    rollNumberDigits: Array.from({ length: 6 }, (_, d) => (d + index) % 10),
+  };
 }
 
 const api: DetectionHarnessApi = {
@@ -341,55 +419,19 @@ const api: DetectionHarnessApi = {
   runFullStockSheetReadCase(spec) {
     const cv = requireCv();
     const geometry = computeStockTemplateGeometry(spec.questionCount);
-    const { canvas, scaledMarkers } = buildStockSheetCanvas(
-      geometry,
-      spec.answers,
-      STOCK_SHEET_RENDER_SCALE,
-    );
+    return readOneStockSheet(cv, geometry, spec.answers, spec.tiltDeg);
+  },
 
-    const flatMat = sheetToMat(cv, canvas);
-    const tilted = simulateTilt(
-      cv,
-      flatMat,
-      scaledMarkers,
-      spec.tiltDeg,
-      canvas.width,
-      canvas.height,
-    );
-    flatMat.delete();
-
-    const detector = new CornerMarkerDetector(cv as unknown as ArucoCv);
-    const detection = detector.detect(tilted);
-    if (!detection.complete) {
-      tilted.delete();
-      return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+  runContinuousScanStressCase(spec) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(spec.questionCount);
+    const results: FullStockSheetReadCaseResult[] = [];
+    for (let i = 0; i < spec.sheetCount; i++) {
+      results.push(
+        readOneStockSheet(cv, geometry, answersForStressIndex(spec.questionCount, i), 0),
+      );
     }
-
-    const dewarped = dewarpFrame(cv as unknown as PerspectiveCv, tilted, detection.corners);
-    tilted.delete();
-
-    const dewarpedCanvas = document.createElement('canvas');
-    dewarpedCanvas.width = dewarped.width;
-    dewarpedCanvas.height = dewarped.height;
-    (cv as unknown as PerspectiveCv).imshow(dewarpedCanvas, dewarped.mat);
-    dewarped.mat.delete();
-
-    const dewarpedCtx = dewarpedCanvas.getContext('2d');
-    if (!dewarpedCtx) throw new Error('2D canvas context unavailable');
-    const dewarpedImageData = dewarpedCtx.getImageData(0, 0, dewarped.width, dewarped.height);
-
-    const mappedGeometry = mapTemplateGeometryToFrame(
-      geometry,
-      { width: dewarped.width, height: dewarped.height },
-      DEFAULT_PADDING_RATIO,
-    );
-    const result = readAnswerSheet(dewarpedImageData, mappedGeometry);
-
-    return {
-      cornerDetectionComplete: true,
-      questions: result.questions,
-      rollNumberColumns: result.rollNumberColumns,
-    };
+    return results;
   },
 };
 

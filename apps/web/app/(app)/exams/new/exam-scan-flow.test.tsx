@@ -183,6 +183,50 @@ describe('ExamScanFlow', () => {
     expect(screen.getByText(/roll #7/i)).toBeInTheDocument();
   });
 
+  it('scores 30 consecutive student captures correctly and independently, with no state bleed between sheets (M2-005)', async () => {
+    // Simulates a full continuous session: 30 distinct student sheets
+    // scanned back to back, zero clicks between them (each is just a new
+    // capturedFrame arriving, exactly like a real auto-capture firing —
+    // see docs/reports/SHARLO-M2-005.md). Each sheet gets a different
+    // correct-count and a different roll digit so a stuck/stale display
+    // (state bleeding from a previous sheet) would be caught, not just a
+    // wrong-but-plausible number matching by coincidence.
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    for (let i = 0; i < 30; i++) {
+      const correctCount = i % 21; // cycles 0..20, exercising every possible score at least once
+      const rollDigit = i % 10;
+      const studentAnswers = Array.from({ length: 20 }, (_, q) => ({
+        outcome: 'answered' as const,
+        optionIndex: q < correctCount ? 0 : 1,
+      }));
+      useManualCaptureMock.mockReturnValue({
+        capturedFrame: fakeFrame(2000 + i),
+        canCapture: true,
+        capture: vi.fn(),
+      });
+      useSheetReaderMock.mockReturnValue({
+        questions: studentAnswers,
+        rollNumberColumns: [{ outcome: 'answered', optionIndex: rollDigit }],
+      });
+
+      rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+
+      expect(await screen.findByText(`${correctCount} / 20`)).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(`roll #${rollDigit}$`, 'i'))).toBeInTheDocument();
+    }
+  });
+
   it('calls onRestart when "End exam" is clicked', async () => {
     const onRestart = vi.fn();
     render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={onRestart} />);
