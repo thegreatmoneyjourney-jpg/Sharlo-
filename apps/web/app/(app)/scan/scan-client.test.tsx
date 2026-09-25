@@ -1,11 +1,12 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScanClient from './scan-client';
 import type { CameraState } from './use-camera-stream';
 
-const { loadOpenCvMock, useCameraStreamMock } = vi.hoisted(() => ({
+const { loadOpenCvMock, useCameraStreamMock, useCornerDetectionMock } = vi.hoisted(() => ({
   loadOpenCvMock: vi.fn(),
   useCameraStreamMock: vi.fn(),
+  useCornerDetectionMock: vi.fn(),
 }));
 
 vi.mock('@/lib/scanning/opencv-loader', () => ({
@@ -16,16 +17,30 @@ vi.mock('./use-camera-stream', () => ({
   useCameraStream: useCameraStreamMock,
 }));
 
+// The real hook calls into OpenCV's ArUco detector, which needs actual
+// WASM execution in a browser — can't run in jsdom (see
+// docs/reports/SHARLO-M1-003.md). ScanClient's own tests only need to
+// verify it renders/composes correctly, not that detection itself
+// works, so this stays a harmless no-op unless a test overrides it.
+vi.mock('./use-corner-detection', () => ({
+  useCornerDetection: useCornerDetectionMock,
+}));
+
 function mockCamera(state: CameraState, retry = vi.fn()) {
   useCameraStreamMock.mockReturnValue({ state, retry });
 }
 
 const OPENCV_READY = Promise.resolve({ cv: { getBuildInformation: () => 'x' } });
 
+beforeEach(() => {
+  useCornerDetectionMock.mockReturnValue({ result: null, measuredFps: null });
+});
+
 afterEach(() => {
   cleanup();
   loadOpenCvMock.mockReset();
   useCameraStreamMock.mockReset();
+  useCornerDetectionMock.mockReset();
 });
 
 describe('ScanClient', () => {
@@ -101,5 +116,44 @@ describe('ScanClient', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/doesn.t support camera access/i);
     expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it('only activates corner detection once both OpenCV and the camera are ready', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(document.querySelector('video')).toBeInTheDocument();
+    });
+    // Called at least once with active=true — the useEffect dependency
+    // change (loading -> ready) may also produce an earlier false call.
+    expect(useCornerDetectionMock).toHaveBeenCalledWith(expect.anything(), true);
+  });
+
+  it('shows the measured fps once corner detection reports one', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useCornerDetectionMock.mockReturnValue({ result: null, measuredFps: 11.7 });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('11.7 fps')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show an fps readout before corner detection has measured one', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useCornerDetectionMock.mockReturnValue({ result: null, measuredFps: null });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(document.querySelector('video')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/fps/)).not.toBeInTheDocument();
   });
 });
