@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed-templates": "tsx src/db/seed-stock-templates.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.3",
