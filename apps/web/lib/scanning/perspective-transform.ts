@@ -11,20 +11,35 @@
  * a real `cv.Size` instance, `matFromArray`'s type-tag argument) were
  * still verified empirically rather than assumed.
  *
- * No confirmed template geometry exists yet (M2-001) to say what a
- * sheet's *true* flat dimensions are or how far the bubble grid extends
- * past the markers, so the output rectangle is derived from the
- * observed marker positions themselves, padded by `paddingRatio`
- * (default 6%) on every side rather than mapping marker centers exactly
- * onto the output's edge pixels. A real-browser round-trip check (detect
- * -> dewarp -> re-detect the same markers in the output) caught this:
- * with zero padding, each corner marker's own center sits exactly at an
- * output corner, so half of every marker's own footprint falls outside
- * the output canvas and gets clipped — confirmed empirically (all 4 test
- * angles, including an untilted 0° control, failed to re-detect any
- * marker in the unpadded output). Padding is a placeholder default
- * pending M2-001's real answer for how much sheet content sits outside
- * the marker-to-marker rectangle — see docs/reports/SHARLO-M1-005.md.
+ * The output rectangle is derived from the observed marker positions
+ * themselves, padded by `paddingRatio` (default 6%) on every side rather
+ * than mapping marker centers exactly onto the output's edge pixels. A
+ * real-browser round-trip check (detect -> dewarp -> re-detect the same
+ * markers in the output) caught this: with zero padding, each corner
+ * marker's own center sits exactly at an output corner, so half of every
+ * marker's own footprint falls outside the output canvas and gets
+ * clipped — confirmed empirically (all 4 test angles, including an
+ * untilted 0° control, failed to re-detect any marker in the unpadded
+ * output). See docs/reports/SHARLO-M1-005.md.
+ *
+ * **Bubble content itself is unaffected by this**, whatever the padding
+ * ratio: real template geometry now exists (M2-001,
+ * `lib/templates/geometry.ts`) and every bubble sits *inside* the
+ * marker-to-marker rectangle, not beyond it, so `paddingRatio` never
+ * needs to be large enough to "include the content" — content is already
+ * included at padding=0. Its only real job is keeping each marker's own
+ * printed footprint from clipping in the dewarped output. M2-001's real
+ * numbers (25mm markers on a ~155mm marker span) mean that actually
+ * needs ~8.1% (half a marker's size, as a fraction of the span), a bit
+ * more than this default's 6% — so a marker's own ink *would* still clip
+ * slightly today. Left as-is rather than bumped, since nothing in the
+ * current pipeline re-detects markers in the dewarped output (bubble
+ * sampling doesn't need them visible there) and changing this constant's
+ * value is a real M1-pipeline behavior change needing its own
+ * re-verification pass — out of scope for M2-001, which only needed to
+ * find out the real number, not spend it. Flagged in
+ * docs/reports/SHARLO-M2-001.md as a finding for whichever future task
+ * first actually needs post-dewarp marker visibility.
  */
 
 import type { CornerName, CvMat, DetectedCorner, Point } from './corner-markers';

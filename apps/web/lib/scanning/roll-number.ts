@@ -12,8 +12,10 @@
  *
  * Deliberately no code here samples pixels or knows where a roll-number
  * grid is positioned on a sheet — same scope boundary bubble-fill.ts
- * documents for itself: no real template exists yet (M2-001/M2-002) to
- * say where that grid actually is, and "same bubble-reading technique
+ * documents for itself: the real template reader that would map
+ * `lib/templates/geometry.ts`'s `rollNumberColumns` (confirmed by
+ * M2-001) to actual pixel regions is still a later milestone's job
+ * (M2-004/M2-005's scan flow), and "same bubble-reading technique
  * applied to the roll-number block" (this task's own description in
  * TASKS.md) presupposes a caller that already has per-column
  * classifications, the same way bubble-fill.ts presupposes a caller

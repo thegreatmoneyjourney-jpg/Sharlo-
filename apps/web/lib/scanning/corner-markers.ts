@@ -17,17 +17,14 @@
  * directly rather than inferred from position, which stays correct even
  * if a sheet is picked up rotated.
  *
- * **Placeholder pending `M2-001`:** the specific dictionary and the 4
- * marker IDs below are a proposal to unblock this task, not a confirmed
- * product decision — `docs/TASKS.md`'s own milestone ordering has M2
- * (templates) depend on M1 (scanning core), but corner detection can't
- * be built or tested without *some* concrete marker definition to detect
- * against, and none exists yet (`templates.geometry`, ARCHITECTURE.md
- * §6, is empty until M2-001/M2-002 build the actual template system).
- * Flagged in `docs/reports/SHARLO-M1-003.md` rather than silently
- * decided — when M2-001 defines real templates, confirm these constants
- * still hold (or update every reference together, they're deliberately
- * centralized here as the single source of truth).
+ * **Confirmed final by `M2-001`** (`docs/reports/SHARLO-M2-001.md`): the
+ * dictionary and 4 marker IDs below were originally a placeholder
+ * proposal (`docs/reports/SHARLO-M1-003.md`) to unblock M1 before any
+ * real template existed. `M2-001`'s stock template geometry
+ * (`lib/templates/geometry.ts`) uses these exact same constants — no
+ * change was needed. Still the single source of truth for both sides:
+ * detection here, and marker generation in
+ * `lib/templates/aruco-marker-patterns.ts`.
  */
 
 import type { OpenCvRuntime } from './opencv-loader';

@@ -210,3 +210,27 @@ test.describe('roll-number grid reading (FR-DETECT-04)', () => {
     expect(result.match).toEqual({ status: 'unread' });
   });
 });
+
+test.describe('stock template corner markers are actually detectable (M2-001, FR-TPL-01)', () => {
+  test('all 4 corner markers on every stock question-count variant detect at their exact geometry.ts positions', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    for (const questionCount of [20, 50, 100] as const) {
+      await test.step(`${questionCount}-question variant`, async () => {
+        const result = await page.evaluate(
+          (count) => window.DetectionHarness.runStockTemplateMarkerCheck(count),
+          questionCount,
+        );
+
+        expect(result.complete).toBe(true);
+        // Sub-pixel refinement (CORNER_REFINE_SUBPIX) means this is never
+        // exactly 0 even on a noiseless render — a few px is detection
+        // precision, not a geometry bug; a real position-math error would
+        // show up as many pixels or points off, not this small.
+        expect(result.maxPositionErrorPx).toBeLessThan(3);
+      });
+    }
+  });
+});
