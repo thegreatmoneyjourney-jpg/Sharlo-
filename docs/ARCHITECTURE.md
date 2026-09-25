@@ -244,6 +244,28 @@ app_config (
 )
 -- seeded: ('public_result_ttl_days', '30', 'STRAI ID expiry window, FR-PUBLISH-05')
 -- seeded: ('entitlement_cache_max_age_hours', '24', 'Client entitlement-cache freshness window, ADR-0015')
+-- seeded (Addendum 4): ('capacity_warn_cpu_pct' / '_ram_pct' / '_disk_pct', '75',
+-- 'Capacity-dashboard sustained-usage warning threshold, FR-ADMIN-16') -- reuses
+-- this table rather than a parallel config mechanism, same pattern M5-014's
+-- quota override already follows for usage_counters.
+
+-- Capacity/scaling monitoring (Addendum 4, FR-ADMIN-16) -- periodic snapshots a
+-- lightweight scheduled job writes (the same in-process scheduler pattern
+-- already established for the Recovery Key reminder cadence, see §12/ADR-0011
+-- -- no new job-queue infra). cpu_pct/ram_pct/disk_pct come from a lightweight
+-- local read (e.g. /proc, `docker stats`), not a full Prometheus/node_exporter
+-- stack -- proportionate to a single-VPS solo-founder deployment (see §12).
+-- db_size_bytes from Postgres's own pg_database_size(); active_user_count/
+-- scans_processed_count from existing users/server-side sync-call activity,
+-- not new client instrumentation. The admin dashboard (M5-016) reads this
+-- table directly; no separate time-series DB.
+capacity_metrics_snapshots (
+  id uuid pk, captured_at timestamptz not null,
+  active_user_count int, new_user_count_since_last int,
+  scans_processed_count int,  -- since the previous snapshot, not cumulative
+  db_size_bytes bigint,
+  cpu_pct numeric, ram_pct numeric, disk_pct numeric
+)
 
 -- Non-sensitive templates
 templates (
@@ -476,6 +498,7 @@ Also required:
 - **Distribution: PWA only, confirmed** (CLAUDE.md non-negotiable — no native app). The only recurring hosting cost is the domain; this VPS already hosts web/API/DB, no separate app-store hosting infrastructure. See `docs/TASKS.md` Backlog `BACKLOG-002` for the post-revenue, non-blocking Trusted Web Activity (Play Store) wrapper — same PWA, no separate codebase, no Apple App Store listing (unfavorable review policy for thin PWA wrappers; Safari's "Add to Home Screen" already covers iOS adequately).
 - **Domains:** marketing + app on the apex/`app.` subdomain via the main Next.js deployment; admin on its own subdomain (§11) — ideally a genuinely separate deploy target so a marketing-site bug can't accidentally expose admin routes.
 - **CI/CD:** GitHub Actions runs `npm run ci` (lint + typecheck + test) on every push/PR; a separate deploy workflow (SSH + `docker compose pull && up -d`, or a small container registry push/pull) runs on merge to `main`. No blue/green or k8s-style rollout needed at this scale — brief downtime on deploy is acceptable for v1 and should be explicitly, not silently, accepted.
+- **Capacity monitoring (Addendum 4, `FR-ADMIN-16`):** VPS-level CPU/RAM/disk read via a lightweight local mechanism (e.g. periodic `/proc` reads, or `docker stats --no-stream` since everything already runs in this Compose stack) — not a full Prometheus/node_exporter/Grafana stack, which would be disproportionate infra for one VPS with no fleet to aggregate across. Written into `capacity_metrics_snapshots` (§6) by the same in-process scheduler already driving the Recovery Key reminder cadence, read directly by the admin dashboard. Revisit this choice (a real metrics stack) only if/when there's an actual fleet to monitor, not preemptively.
 
 ---
 
@@ -523,5 +546,6 @@ Also required:
 9. **AI-assisted support reply drafting (`FR-ADMIN-12`) — RESOLVED, confirmed 2026-09-25 (Addendum 3), `ADR-0016`.** A new, separately-approved AI use case, explicitly distinct from and not in conflict with `ADR-0014`'s "no AI on student data" boundary — support-ticket drafting only, never auto-sent, mandatory PII-sanitization pass before any third-party API call (`NFR-SEC-15`).
 10. **Admin-managed integration credentials — RESOLVED, confirmed 2026-09-25 (Addendum 3), `ADR-0017`.** Every integration secret (Resend, Paddle, Bank Alfalah, the new AI provider) moves to an encrypted, admin-panel-writable store, never a plaintext env var. Ships in two stages: the table + minimal write path pulled forward into `M0-010` (needed immediately by `M0-008`), the polished admin UI in `M5-012`.
 11. **Admin-panel finance/ops scope (`FR-ADMIN-13`/`14`/`15`) — RESOLVED, confirmed 2026-09-25 (Addendum 3).** Financial ledger (dunning, payout/PKR ledger split, refund reasons, expenses, net profit), per-user quota override, and the credentials panel above all folded into the existing M5 (Admin Panel) milestone rather than a new parallel milestone — reasoning in `docs/reports/SHARLO-M0-011.md`: all three are admin-panel-shaped work that already needs M5-001/002's subdomain/auth/audit-log infrastructure, and splitting them into a separate milestone would fragment one cohesive area for no dependency-graph benefit.
+12. **Capacity/scaling dashboard (`FR-ADMIN-16`) and synthetic load testing (`M7-006`) — RESOLVED, confirmed 2026-09-25 (Addendum 4).** Same reasoning as item 11: the capacity dashboard is admin-panel-shaped work that already needs M5's subdomain/auth/audit-log infrastructure, so it folds into M5 as `M5-016` rather than a new milestone (there is no separate "M-Ops" milestone in `docs/TASKS.md` — admin-panel ops/finance work has consistently landed in M5 since item 11, and this follows the same pattern). Its data flow is deliberately lightweight (§6/§12: a periodic snapshot table + the existing in-process scheduler, no new metrics-stack infra) — proportionate to a single-VPS deployment, revisit only once there's an actual fleet to justify more. Load testing was already `M7-006`; Addendum 4 concretizes it (tool choice left to the implementer — k6 or Artillery, both free/open-source; 1,000/5,000/10,000/20,000 simulated concurrent users; server-touching surfaces only — auth, API, DB, webhooks, never scanning) rather than adding a parallel task, and adds a firm deliverable: a new ADR documenting the real measured findings and the resulting VPS-tier/scaling-plan recommendation, not just a report. Per the founder's own framing, `M7-006` does not need to wait for the rest of M7 — see `docs/TASKS.md`'s M7 section for the explicit "run as soon as M3–M5's core surfaces are stable" note, the same pattern `M1-011` already established for a task that lives in one milestone's list but isn't gated on the rest of it.
 
-Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Items 8–11 are Addendum 3's additions, all resolved on arrival — nothing from this round is open. The one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of any addendum's decisions.
+Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Items 8–12 are Addendum 3/4's additions, all resolved on arrival — nothing from this round is open. The one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of any addendum's decisions.
