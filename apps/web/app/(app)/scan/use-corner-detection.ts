@@ -24,6 +24,7 @@ export interface CornerDetectionState {
 export function useCornerDetection(
   videoRef: RefObject<HTMLVideoElement | null>,
   active: boolean,
+  onFrame?: (result: CornerDetectionResult, now: number) => void,
 ): CornerDetectionState {
   const [result, setResult] = useState<CornerDetectionResult | null>(null);
   const [measuredFps, setMeasuredFps] = useState<number | null>(null);
@@ -67,11 +68,22 @@ export function useCornerDetection(
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
         const mat = (cv as unknown as ArucoCv).matFromImageData(imageData);
+        let detectionResult: CornerDetectionResult;
         try {
-          setResult(detector.detect(mat));
+          detectionResult = detector.detect(mat);
         } finally {
           mat.delete();
         }
+        setResult(detectionResult);
+        // Called synchronously from within this RAF-driven callback, not
+        // from a separate effect reacting to `result` as a dependency —
+        // that would mean calling a consumer's setState synchronously in
+        // an effect body on every detected frame, the same
+        // react-hooks/set-state-in-effect antipattern already hit and
+        // fixed twice in M1-002/M1-003 (see use-camera-stream.ts and the
+        // effect above). This callback lives in the same already-accepted
+        // shape as this loop's own setResult/setMeasuredFps calls.
+        onFrame?.(detectionResult, now);
 
         frameCount++;
         const elapsed = now - fpsWindowStart;
@@ -89,7 +101,7 @@ export function useCornerDetection(
       cancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [active, videoRef]);
+  }, [active, videoRef, onFrame]);
 
   return {
     result: active ? result : null,
