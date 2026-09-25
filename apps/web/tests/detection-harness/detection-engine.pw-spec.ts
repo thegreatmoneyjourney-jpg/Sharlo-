@@ -311,6 +311,82 @@ test.describe('custom-template bubble-grid estimation (M2-003, FR-TPL-02)', () =
   });
 });
 
+test.describe('full stock-sheet read (M2-004, FR-EXAM-03): map-geometry-to-frame.ts + read-answer-sheet.ts against real pixels', () => {
+  const cyclingAnswers = Array.from({ length: 20 }, (_, i) => i % 4);
+  const rollDigits = [4, 0, 7, 1, 2, 3];
+
+  test('reads every question and roll-number digit correctly at 0° tilt', async ({ page }) => {
+    await gotoHarness(page);
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runFullStockSheetReadCase(spec),
+      {
+        questionCount: 20 as const,
+        tiltDeg: 0,
+        answers: { questionAnswers: cyclingAnswers, rollNumberDigits: rollDigits },
+      },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(
+      cyclingAnswers.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+    expect(result.rollNumberColumns).toEqual(
+      rollDigits.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+  });
+
+  test('reads correctly after a real detected-and-dewarped tilt (10°) — proves map-geometry-to-frame.ts works on more than a flat/untilted frame', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runFullStockSheetReadCase(spec),
+      {
+        questionCount: 20 as const,
+        tiltDeg: 10,
+        answers: { questionAnswers: cyclingAnswers, rollNumberDigits: rollDigits },
+      },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(
+      cyclingAnswers.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+    expect(result.rollNumberColumns).toEqual(
+      rollDigits.map((optionIndex) => ({ outcome: 'answered', optionIndex })),
+    );
+  });
+
+  test('reads a left-blank question and a left-blank roll-number column as blank, never guessed', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const questionAnswers: (number | null)[] = new Array(20).fill(0);
+    questionAnswers[4] = null; // question 5 left blank
+    const rollNumberDigits: (number | null)[] = [4, 0, null, 1, 2, 3]; // column index 2 left blank
+
+    const result = await page.evaluate(
+      (spec) => window.DetectionHarness.runFullStockSheetReadCase(spec),
+      { questionCount: 20 as const, tiltDeg: 0, answers: { questionAnswers, rollNumberDigits } },
+    );
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.questions).toEqual(
+      questionAnswers.map((a) =>
+        a === null ? { outcome: 'blank' } : { outcome: 'answered', optionIndex: a },
+      ),
+    );
+    expect(result.rollNumberColumns).toEqual(
+      rollNumberDigits.map((d) =>
+        d === null ? { outcome: 'blank' } : { outcome: 'answered', optionIndex: d },
+      ),
+    );
+  });
+});
+
 test.describe('stock template corner markers are actually detectable (M2-001, FR-TPL-01)', () => {
   test('all 4 corner markers on every stock question-count variant detect at their exact geometry.ts positions', async ({
     page,

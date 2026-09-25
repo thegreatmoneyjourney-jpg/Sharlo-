@@ -30,7 +30,6 @@ import {
 } from '../../lib/scanning/bubble-fill';
 import type { RollNumberMatchResult, RollNumberReadResult } from '../../lib/scanning/roll-number';
 import { matchRollNumber, readRollNumber } from '../../lib/scanning/roll-number';
-import { arucoDataGridForCorner, fullMarkerGrid } from '../../lib/templates/aruco-marker-patterns';
 import type { StockTemplateQuestionCount } from '../../lib/templates/geometry';
 import { computeStockTemplateGeometry } from '../../lib/templates/geometry';
 import type { SheetBoundaryCv } from '../../lib/templates/detect-sheet-boundary';
@@ -40,6 +39,8 @@ import type {
   EstimatedBubbleGrid,
 } from '../../lib/templates/detect-bubble-grid';
 import { estimateBubbleGrid } from '../../lib/templates/detect-bubble-grid';
+import { mapTemplateGeometryToFrame } from '../../lib/templates/map-geometry-to-frame';
+import { readAnswerSheet } from '../../lib/scanning/read-answer-sheet';
 import type { HarnessCv } from './fixtures';
 import {
   SAMPLE_RADIUS_PX,
@@ -53,6 +54,11 @@ import {
   buildSyntheticBubbleGridPhoto,
   buildSyntheticSheetPhoto,
 } from './template-creation-fixtures';
+import type { StockSheetAnswers } from './stock-sheet-fixtures';
+import { buildStockSheetCanvas, drawStockMarkers } from './stock-sheet-fixtures';
+
+/** See `buildStockSheetCanvas`'s own doc comment for why this needed to be found empirically, not assumed as 1. */
+const STOCK_SHEET_RENDER_SCALE = 3;
 
 let cvHandle: HarnessCv | undefined;
 
@@ -183,6 +189,18 @@ export interface BubbleGridCaseSpec {
   columns: number;
 }
 
+export interface FullStockSheetReadCaseSpec {
+  questionCount: StockTemplateQuestionCount;
+  tiltDeg: number;
+  answers: StockSheetAnswers;
+}
+
+export interface FullStockSheetReadCaseResult {
+  cornerDetectionComplete: boolean;
+  questions: QuestionResult[];
+  rollNumberColumns: QuestionResult[];
+}
+
 export interface DetectionHarnessApi {
   cvReady: boolean;
   runCornerDetectionCase: (tiltDeg: number) => CornerDetectionCaseResult;
@@ -193,6 +211,7 @@ export interface DetectionHarnessApi {
   ) => StockTemplateMarkerCheckResult;
   runSheetBoundaryCase: (spec: SheetBoundaryCaseSpec) => SheetBoundaryCaseResult;
   runBubbleGridCase: (spec: BubbleGridCaseSpec) => EstimatedBubbleGrid;
+  runFullStockSheetReadCase: (spec: FullStockSheetReadCaseSpec) => FullStockSheetReadCaseResult;
 }
 
 declare global {
@@ -259,23 +278,11 @@ const api: DetectionHarnessApi = {
     if (!ctx) throw new Error('2D canvas context unavailable');
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawStockMarkers(ctx, geometry);
 
     const corners: Array<[CornerName, { x: number; y: number }]> = Object.entries(
       geometry.markers,
     ) as Array<[CornerName, { x: number; y: number }]>;
-    for (const [corner, center] of corners) {
-      const grid = fullMarkerGrid(arucoDataGridForCorner(corner));
-      const cellSize = geometry.markerSizePt / grid.length;
-      const left = center.x - geometry.markerSizePt / 2;
-      const top = center.y - geometry.markerSizePt / 2;
-      ctx.fillStyle = 'black';
-      for (let row = 0; row < grid.length; row++) {
-        for (let col = 0; col < grid[row].length; col++) {
-          if (grid[row][col] !== 1) continue;
-          ctx.fillRect(left + col * cellSize, top + row * cellSize, cellSize, cellSize);
-        }
-      }
-    }
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const mat = (cv as unknown as ArucoCv).matFromImageData(imageData);
@@ -329,6 +336,60 @@ const api: DetectionHarnessApi = {
     const result = estimateBubbleGrid(cv as unknown as DetectBubbleGridCv, mat);
     mat.delete();
     return result;
+  },
+
+  runFullStockSheetReadCase(spec) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(spec.questionCount);
+    const { canvas, scaledMarkers } = buildStockSheetCanvas(
+      geometry,
+      spec.answers,
+      STOCK_SHEET_RENDER_SCALE,
+    );
+
+    const flatMat = sheetToMat(cv, canvas);
+    const tilted = simulateTilt(
+      cv,
+      flatMat,
+      scaledMarkers,
+      spec.tiltDeg,
+      canvas.width,
+      canvas.height,
+    );
+    flatMat.delete();
+
+    const detector = new CornerMarkerDetector(cv as unknown as ArucoCv);
+    const detection = detector.detect(tilted);
+    if (!detection.complete) {
+      tilted.delete();
+      return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+    }
+
+    const dewarped = dewarpFrame(cv as unknown as PerspectiveCv, tilted, detection.corners);
+    tilted.delete();
+
+    const dewarpedCanvas = document.createElement('canvas');
+    dewarpedCanvas.width = dewarped.width;
+    dewarpedCanvas.height = dewarped.height;
+    (cv as unknown as PerspectiveCv).imshow(dewarpedCanvas, dewarped.mat);
+    dewarped.mat.delete();
+
+    const dewarpedCtx = dewarpedCanvas.getContext('2d');
+    if (!dewarpedCtx) throw new Error('2D canvas context unavailable');
+    const dewarpedImageData = dewarpedCtx.getImageData(0, 0, dewarped.width, dewarped.height);
+
+    const mappedGeometry = mapTemplateGeometryToFrame(
+      geometry,
+      { width: dewarped.width, height: dewarped.height },
+      DEFAULT_PADDING_RATIO,
+    );
+    const result = readAnswerSheet(dewarpedImageData, mappedGeometry);
+
+    return {
+      cornerDetectionComplete: true,
+      questions: result.questions,
+      rollNumberColumns: result.rollNumberColumns,
+    };
   },
 };
 
