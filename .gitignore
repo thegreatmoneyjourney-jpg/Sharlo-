@@ -14,6 +14,11 @@ apps/web/public/vendor/
 # Generated detection-harness bundle (apps/web/scripts/build-detection-harness.mjs)
 apps/web/tests/detection-harness/.generated/
 
+# Ephemeral esbuild-for-Node bundle (apps/web/scripts/run-generate-stock-templates.mjs)
+# — the stock template PDFs/seed data it produces ARE committed (public/templates/,
+# lib/templates/stock-templates-seed.json); only this intermediate bundle isn't.
+apps/web/scripts/.generated/
+
 # Playwright test artifacts
 apps/web/test-results/
 apps/web/playwright-report/

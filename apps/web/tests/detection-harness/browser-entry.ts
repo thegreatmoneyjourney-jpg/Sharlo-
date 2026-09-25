@@ -18,7 +18,7 @@
  * that reason.
  */
 
-import type { ArucoCv } from '../../lib/scanning/corner-markers';
+import type { ArucoCv, CornerName } from '../../lib/scanning/corner-markers';
 import { CornerMarkerDetector } from '../../lib/scanning/corner-markers';
 import type { PerspectiveCv } from '../../lib/scanning/perspective-transform';
 import { DEFAULT_PADDING_RATIO, dewarpFrame } from '../../lib/scanning/perspective-transform';
@@ -30,6 +30,9 @@ import {
 } from '../../lib/scanning/bubble-fill';
 import type { RollNumberMatchResult, RollNumberReadResult } from '../../lib/scanning/roll-number';
 import { matchRollNumber, readRollNumber } from '../../lib/scanning/roll-number';
+import { arucoDataGridForCorner, fullMarkerGrid } from '../../lib/templates/aruco-marker-patterns';
+import type { StockTemplateQuestionCount } from '../../lib/templates/geometry';
+import { computeStockTemplateGeometry } from '../../lib/templates/geometry';
 import type { HarnessCv } from './fixtures';
 import {
   SAMPLE_RADIUS_PX,
@@ -145,11 +148,20 @@ export interface RollNumberCaseResult {
   match: RollNumberMatchResult;
 }
 
+export interface StockTemplateMarkerCheckResult {
+  complete: boolean;
+  /** Largest distance (px, 1 canvas px = 1 PDF point at this check's scale) between a detected marker's center and where `geometry.ts` says it should be — 0 in the noiseless case this check draws, so any real disagreement means the geometry/marker-pattern data itself is wrong, not measurement noise. */
+  maxPositionErrorPx: number;
+}
+
 export interface DetectionHarnessApi {
   cvReady: boolean;
   runCornerDetectionCase: (tiltDeg: number) => CornerDetectionCaseResult;
   runQuestionGridCase: (spec: QuestionGridCaseSpec) => QuestionGridCaseResult;
   runRollNumberCase: (spec: RollNumberCaseSpec) => RollNumberCaseResult;
+  runStockTemplateMarkerCheck: (
+    questionCount: StockTemplateQuestionCount,
+  ) => StockTemplateMarkerCheckResult;
 }
 
 declare global {
@@ -200,6 +212,57 @@ const api: DetectionHarnessApi = {
     const read = readRollNumber(results);
     const match = matchRollNumber(read, new Set(spec.roster));
     return { cornerDetectionComplete: true, read, match };
+  },
+
+  runStockTemplateMarkerCheck(questionCount) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(questionCount);
+
+    // 1 canvas px = 1 PDF point — the same top-left-origin, y-down space
+    // geometry.ts already works in, so no coordinate flip is needed here
+    // (unlike generate-pdf.ts, which flips into pdf-lib's y-up convention).
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(geometry.pageWidthPt);
+    canvas.height = Math.ceil(geometry.pageHeightPt);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D canvas context unavailable');
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const corners: Array<[CornerName, { x: number; y: number }]> = Object.entries(
+      geometry.markers,
+    ) as Array<[CornerName, { x: number; y: number }]>;
+    for (const [corner, center] of corners) {
+      const grid = fullMarkerGrid(arucoDataGridForCorner(corner));
+      const cellSize = geometry.markerSizePt / grid.length;
+      const left = center.x - geometry.markerSizePt / 2;
+      const top = center.y - geometry.markerSizePt / 2;
+      ctx.fillStyle = 'black';
+      for (let row = 0; row < grid.length; row++) {
+        for (let col = 0; col < grid[row].length; col++) {
+          if (grid[row][col] !== 1) continue;
+          ctx.fillRect(left + col * cellSize, top + row * cellSize, cellSize, cellSize);
+        }
+      }
+    }
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const mat = (cv as unknown as ArucoCv).matFromImageData(imageData);
+    const detector = new CornerMarkerDetector(cv as unknown as ArucoCv);
+    const detection = detector.detect(mat);
+    mat.delete();
+
+    if (!detection.complete) {
+      return { complete: false, maxPositionErrorPx: Number.POSITIVE_INFINITY };
+    }
+
+    let maxPositionErrorPx = 0;
+    for (const [corner, expectedCenter] of corners) {
+      const detected = detection.corners[corner].center;
+      const error = Math.hypot(detected.x - expectedCenter.x, detected.y - expectedCenter.y);
+      maxPositionErrorPx = Math.max(maxPositionErrorPx, error);
+    }
+    return { complete: true, maxPositionErrorPx };
   },
 };
 

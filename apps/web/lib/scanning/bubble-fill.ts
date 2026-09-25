@@ -6,18 +6,16 @@
  * Scope boundary: this module samples and classifies *caller-supplied*
  * bubble regions (a center + radius) and question groupings (arrays of
  * fill ratios) — it does not know or invent a whole-sheet bubble-grid
- * layout. No real answer-sheet template exists yet (M2-001/M2-002), and
- * inventing a placeholder grid here (the way M1-003 had to invent a
- * placeholder marker scheme to have *anything* to detect against) isn't
- * actually necessary: `TASKS.md`'s own M1-006 description is "sample
- * *each* bubble region," which presupposes a caller already knows where
- * the bubbles are. That caller is a real template reader, which is a
- * later milestone's job once M2-001 defines actual geometry — building
- * one here would mean either inventing fake geometry that could be
- * mistaken for a real product decision, or wiring the live scan page
- * (scan-client.tsx) to overlay a meaningless placeholder grid on real
- * camera frames. Neither is this task's job. See
- * docs/reports/SHARLO-M1-006.md.
+ * layout. `TASKS.md`'s own M1-006 description is "sample *each* bubble
+ * region," which presupposes a caller already knows where the bubbles
+ * are. That caller is a real template *reader* — mapping a template's
+ * geometry (`lib/templates/geometry.ts`, confirmed by M2-001) plus a
+ * dewarped frame to actual bubble regions in that frame — which is a
+ * later milestone's job (M2-004/M2-005's scan flow), not this module's;
+ * building one here would mean either inventing fake geometry or wiring
+ * the live scan page (scan-client.tsx) to overlay a placeholder grid on
+ * real camera frames before the real scan flow exists. See
+ * docs/reports/SHARLO-M1-006.md and docs/reports/SHARLO-M2-001.md.
  *
  * `sampleBubbleFillRatio` operates directly on `ImageData` — deliberately
  * *not* OpenCV: computing mean darkness inside a circular region is plain

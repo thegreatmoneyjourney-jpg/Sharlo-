@@ -19,6 +19,9 @@ const eslintConfig = defineConfig([
     // (scripts/build-detection-harness.mjs) — same reasoning as
     // public/vendor/** above.
     'tests/detection-harness/.generated/**',
+    // Ephemeral esbuild-for-Node bundle
+    // (scripts/run-generate-stock-templates.mjs) — same reasoning.
+    'scripts/.generated/**',
   ]),
 ]);
 
