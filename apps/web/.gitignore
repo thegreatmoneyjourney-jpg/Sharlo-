@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated build-time assets (see scripts/copy-opencv-asset.mjs) — not
+# source, regenerated from the pinned npm dependency on predev/prebuild
+/public/vendor/

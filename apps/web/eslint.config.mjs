@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     'out/**',
     'build/**',
     'next-env.d.ts',
+    // Generated vendor asset (scripts/copy-opencv-asset.mjs) — third-party
+    // minified code, not ours to lint.
+    'public/vendor/**',
   ]),
 ]);
 
