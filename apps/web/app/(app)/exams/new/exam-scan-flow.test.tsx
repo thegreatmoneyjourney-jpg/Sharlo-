@@ -382,6 +382,180 @@ describe('ExamScanFlow', () => {
     expect(screen.getByText(/roll #42/i)).toBeInTheDocument();
   });
 
+  it('warns and holds the save when the same roll number is scanned twice, without saving it (M2-008)', async () => {
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    await screen.findByText('20 / 20');
+
+    // A second capture reads the exact same roll number.
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(3000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 1).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent(/roll #2/i);
+    expect(dialog).toHaveTextContent(/already scanned/i);
+    // Still showing the FIRST scan's result -- the second was never saved.
+    expect(screen.getByText('20 / 20')).toBeInTheDocument();
+  });
+
+  it('Cancel discards the pending rescan, leaving the original result untouched (M2-008)', async () => {
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 3 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    await screen.findByText('20 / 20');
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(3000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 1).result.questions, [{ outcome: 'answered', optionIndex: 3 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    await screen.findByRole('alertdialog');
+
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByText('20 / 20')).toBeInTheDocument();
+  });
+
+  it('confirming "Rescan intentionally" replaces the prior entry, including dropping its orphaned review items (M2-008)', async () => {
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    // First scan of roll #9: question 1 flagged (creates a review item).
+    const firstScanQuestions: QuestionResult[] = Array.from({ length: 20 }, (_, i) =>
+      i === 0 ? { outcome: 'flagged' } : { outcome: 'answered', optionIndex: 0 },
+    );
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(
+        firstScanQuestions,
+        [{ outcome: 'answered', optionIndex: 9 }],
+        [{ kind: 'question', questionNumber: 1, cropDataUrl: 'data:image/png;base64,FAKE' }],
+      ),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    expect(await screen.findByRole('button', { name: /review needed \(1\)/i })).toBeInTheDocument();
+
+    // Second scan of the same roll #9: fully answered this time, no flags.
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(3000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 9 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    await screen.findByRole('alertdialog');
+
+    fireEvent.click(screen.getByRole('button', { name: /rescan intentionally/i }));
+
+    // The old flagged-question review item is gone (it belonged to the
+    // superseded scan), and the new, fully-clean scan's score is shown.
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /fully graded/i })).toBeInTheDocument();
+    expect(screen.getByText('20 / 20')).toBeInTheDocument();
+  });
+
+  it('a different roll number never triggers the duplicate prompt (M2-008)', async () => {
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 1 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    await screen.findByText(/roll #1/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(3000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+
+    expect(await screen.findByText(/roll #2/i)).toBeInTheDocument();
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
   it('scores 30 consecutive student captures correctly and independently, with no state bleed between sheets (M2-005)', async () => {
     // Simulates a full continuous session: 30 distinct student sheets
     // scanned back to back, zero clicks between them (each is just a new
@@ -404,7 +578,12 @@ describe('ExamScanFlow', () => {
 
     for (let i = 0; i < 30; i++) {
       const correctCount = i % 21; // cycles 0..20, exercising every possible score at least once
-      const rollDigit = i % 10;
+      // Two digit columns (not one) so all 30 roll numbers are genuinely
+      // unique ("00".."29") -- a single digit column can only express 10
+      // values, which would make sheet 10 collide with sheet 0 and trip
+      // M2-008's duplicate-roll-number gate, a different feature this
+      // test isn't exercising.
+      const rollString = `${Math.floor(i / 10)}${i % 10}`;
       const studentAnswers = Array.from({ length: 20 }, (_, q) => ({
         outcome: 'answered' as const,
         optionIndex: q < correctCount ? 0 : 1,
@@ -415,13 +594,16 @@ describe('ExamScanFlow', () => {
         capture: vi.fn(),
       });
       useSheetReaderMock.mockReturnValue(
-        readOutcome(studentAnswers, [{ outcome: 'answered', optionIndex: rollDigit }]),
+        readOutcome(studentAnswers, [
+          { outcome: 'answered', optionIndex: Math.floor(i / 10) },
+          { outcome: 'answered', optionIndex: i % 10 },
+        ]),
       );
 
       rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
 
       expect(await screen.findByText(`${correctCount} / 20`)).toBeInTheDocument();
-      expect(screen.getByText(new RegExp(`roll #${rollDigit}$`, 'i'))).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(`roll #${rollString}$`, 'i'))).toBeInTheDocument();
     }
   });
 
