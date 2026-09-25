@@ -1,5 +1,15 @@
 import { sql } from 'drizzle-orm';
-import { integer, jsonb, pgPolicy, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgPolicy,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 /**
  * Minimal `users` table per ARCHITECTURE.md §6 — the M0-006 proof-of-concept
@@ -70,5 +80,80 @@ export const users = pgTable(
       to: 'app_user',
       using: sql`${table.id} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
     }),
+  ],
+).enableRLS();
+
+/**
+ * M2-001/M2-002 — geometry + printable PDFs for the Sharlo stock
+ * templates live in `apps/web/lib/templates/`; this table stores the
+ * (opaque-to-the-API) `geometry` JSONB blob plus enough metadata to list
+ * and select templates. See `docs/reports/SHARLO-M2-002.md`.
+ *
+ * RLS policy shape here is genuinely different from `users`': this table
+ * mixes two kinds of row in one place — `owner_id IS NULL` (a Sharlo
+ * stock template, visible to *every* tenant) and `owner_id = <teacher>`
+ * (that teacher's own custom template, `FR-TPL-02`, visible only to
+ * them) — so a single blanket "row belongs to you" predicate like
+ * `users`' policy would incorrectly hide every stock template from
+ * everyone. Split into per-operation policies instead of one `for: 'all'`
+ * policy, because the *read* rule (own-or-stock) and the *write* rules
+ * (own-only, full stop) are genuinely different predicates, not the same
+ * one reused: an `app_user`-authenticated request must never be able to
+ * insert, update, or delete a stock template — those are seeded through
+ * the privileged migration-owner connection only (`seed-stock-templates.ts`),
+ * which bypasses RLS by default the same way migrations already do.
+ */
+export const templates = pgTable(
+  'templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    ownerId: uuid('owner_id').references(() => users.id), // null = Sharlo stock template
+    name: text('name').notNull(),
+    questionCount: integer('question_count').notNull(),
+    geometry: jsonb('geometry').notNull(), // corner markers + bubble grid — see apps/web/lib/templates/geometry.ts; no student data
+    isStock: boolean('is_stock').notNull().default(false),
+    schemaVersion: integer('schema_version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    pgPolicy('templates_select_own_or_stock', {
+      for: 'select',
+      to: 'app_user',
+      using: sql`${table.ownerId} is null or ${table.ownerId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    // WITH CHECK (not USING) governs INSERT: the *new* row's owner_id
+    // must equal the caller's own id, which also means it can never be
+    // NULL — an app_user connection can never insert a stock template.
+    pgPolicy('templates_insert_own_only', {
+      for: 'insert',
+      to: 'app_user',
+      withCheck: sql`${table.ownerId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    // UPDATE needs both: USING picks which existing rows are even
+    // reachable (only your own — never a stock template), WITH CHECK
+    // stops a reachable row from being *rewritten* to a different
+    // owner_id (e.g. NULL, which would otherwise let a teacher "promote"
+    // their own template into a stock one everybody sees).
+    pgPolicy('templates_update_own_only', {
+      for: 'update',
+      to: 'app_user',
+      using: sql`${table.ownerId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+      withCheck: sql`${table.ownerId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    pgPolicy('templates_delete_own_only', {
+      for: 'delete',
+      to: 'app_user',
+      using: sql`${table.ownerId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    // Partial index — unique only *among stock templates* (is_stock =
+    // true), not a global name constraint that would stop two different
+    // teachers each naming a custom template "Midterm". Lets the seed
+    // script (seed-stock-templates.ts) upsert on conflict and stay
+    // idempotent (same 3 rows, same ids, safe to rerun) instead of
+    // accumulating duplicates or rotating ids on every reseed.
+    uniqueIndex('templates_stock_name_unique')
+      .on(table.name)
+      .where(sql`${table.isStock} = true`),
   ],
 ).enableRLS();

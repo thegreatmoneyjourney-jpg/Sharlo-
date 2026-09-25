@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/db/migrate.js';
 import { withTenantContext } from '../src/db/client.js';
+import * as schema from '../src/db/schema.js';
 import { users } from '../src/db/schema.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -29,7 +30,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
   () => {
     const ownerClient = postgres(DATABASE_URL!, { max: 1 });
     const appClient = postgres(APP_DATABASE_URL!, { max: 5 });
-    const appDb = drizzle(appClient, { schema: { users } });
+    const appDb = drizzle(appClient, { schema });
 
     const tenantA = { id: randomUUID(), email: `tenant-a-${randomUUID()}@example.com` };
     const tenantB = { id: randomUUID(), email: `tenant-b-${randomUUID()}@example.com` };
