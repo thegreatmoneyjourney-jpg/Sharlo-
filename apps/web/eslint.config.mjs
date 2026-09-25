@@ -15,6 +15,10 @@ const eslintConfig = defineConfig([
     // Generated vendor asset (scripts/copy-opencv-asset.mjs) — third-party
     // minified code, not ours to lint.
     'public/vendor/**',
+    // Generated detection-harness bundle/vendor copy
+    // (scripts/build-detection-harness.mjs) — same reasoning as
+    // public/vendor/** above.
+    'tests/detection-harness/.generated/**',
   ]),
 ]);
 

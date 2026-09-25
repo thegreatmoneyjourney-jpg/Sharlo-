@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Sharlo detection engine harness</title>
+  </head>
+  <body>
+    <!--
+      Loads OpenCV.js then the esbuild-bundled browser-entry.ts (both
+      written to ./.generated/ by scripts/build-detection-harness.mjs,
+      not committed — see that script's own comment). browser-entry.ts
+      sets window.DetectionHarness.cvReady once cv finishes initializing;
+      detection-engine.pw-spec.ts polls that flag rather than needing any
+      inline script here to bridge the two.
+    -->
+    <script src="./.generated/opencv.js"></script>
+    <script src="./.generated/harness-bundle.js"></script>
+  </body>
+</html>

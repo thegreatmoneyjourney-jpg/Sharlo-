@@ -10,7 +10,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "pretest:e2e": "node scripts/build-detection-harness.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "next": "16.3.6",
@@ -18,6 +20,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "^4",
     "@techstark/opencv-js": "^4.12.0-release.1",
     "@testing-library/jest-dom": "^7.0.1",
@@ -25,6 +28,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "jsdom": "^30.1.1",
