@@ -41,6 +41,8 @@ import type {
 import { estimateBubbleGrid } from '../../lib/templates/detect-bubble-grid';
 import { mapTemplateGeometryToFrame } from '../../lib/templates/map-geometry-to-frame';
 import { readAnswerSheet } from '../../lib/scanning/read-answer-sheet';
+import { buildReviewItemSpecs } from '../../lib/scanning/review-queue';
+import type { CropRect } from '../../lib/scanning/review-queue';
 import type { HarnessCv } from './fixtures';
 import {
   SAMPLE_RADIUS_PX,
@@ -221,6 +223,26 @@ export interface DetectionHarnessApi {
   runContinuousScanStressCase: (
     spec: ContinuousScanStressCaseSpec,
   ) => FullStockSheetReadCaseResult[];
+  runReviewCropCase: (spec: ReviewCropCaseSpec) => ReviewCropCaseResult;
+}
+
+export interface ReviewCropCaseSpec {
+  questionCount: StockTemplateQuestionCount;
+  answers: StockSheetAnswers;
+}
+
+export interface ReviewCropResult {
+  kind: 'question' | 'roll-number';
+  questionNumber?: number;
+  width: number;
+  height: number;
+  /** `data:image/png;base64,` prefix plus non-trivial length — proof the real canvas drawImage+toDataURL extraction (M2-006's use-sheet-reader.ts) actually produced a real image from real dewarped pixels, not an empty/broken canvas. jsdom can't exercise this at all (no real Canvas 2D implementation), so this is the one thing only a real-browser pass like this can prove. */
+  isValidPngDataUrl: boolean;
+}
+
+export interface ReviewCropCaseResult {
+  cornerDetectionComplete: boolean;
+  crops: ReviewCropResult[];
 }
 
 declare global {
@@ -230,18 +252,29 @@ declare global {
   }
 }
 
+interface DewarpAndReadOutcome {
+  cornerDetectionComplete: boolean;
+  dewarpedCanvas: HTMLCanvasElement | null;
+  mappedGeometry: ReturnType<typeof mapTemplateGeometryToFrame> | null;
+  result: ReturnType<typeof readAnswerSheet> | null;
+}
+
 /**
  * The single-sheet detect -> dewarp -> map -> read pipeline, factored out
- * of `runFullStockSheetReadCase` so `runContinuousScanStressCase` (M2-005)
- * can call the exact same code path many times in a row rather than a
- * second, drifting copy of it.
+ * so every case that needs it (`runFullStockSheetReadCase`,
+ * `runContinuousScanStressCase` (M2-005), `runReviewCropCase` (M2-006))
+ * calls the exact same code path rather than a second, drifting copy of
+ * it. Keeps the dewarped canvas itself in the result (not just the
+ * classification) since M2-006's crop generation needs real pixels to
+ * crop from, the same way `use-sheet-reader.ts` reuses its own dewarped
+ * canvas rather than dewarping a second time.
  */
-function readOneStockSheet(
+function detectDewarpAndRead(
   cv: HarnessCv,
   geometry: ReturnType<typeof computeStockTemplateGeometry>,
   answers: StockSheetAnswers,
   tiltDeg: number,
-): FullStockSheetReadCaseResult {
+): DewarpAndReadOutcome {
   const { canvas, scaledMarkers } = buildStockSheetCanvas(
     geometry,
     answers,
@@ -256,7 +289,12 @@ function readOneStockSheet(
   const detection = detector.detect(tilted);
   if (!detection.complete) {
     tilted.delete();
-    return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+    return {
+      cornerDetectionComplete: false,
+      dewarpedCanvas: null,
+      mappedGeometry: null,
+      result: null,
+    };
   }
 
   const dewarped = dewarpFrame(cv as unknown as PerspectiveCv, tilted, detection.corners);
@@ -279,11 +317,45 @@ function readOneStockSheet(
   );
   const result = readAnswerSheet(dewarpedImageData, mappedGeometry);
 
+  return { cornerDetectionComplete: true, dewarpedCanvas, mappedGeometry, result };
+}
+
+function readOneStockSheet(
+  cv: HarnessCv,
+  geometry: ReturnType<typeof computeStockTemplateGeometry>,
+  answers: StockSheetAnswers,
+  tiltDeg: number,
+): FullStockSheetReadCaseResult {
+  const outcome = detectDewarpAndRead(cv, geometry, answers, tiltDeg);
+  if (!outcome.cornerDetectionComplete || !outcome.result) {
+    return { cornerDetectionComplete: false, questions: [], rollNumberColumns: [] };
+  }
   return {
     cornerDetectionComplete: true,
-    questions: result.questions,
-    rollNumberColumns: result.rollNumberColumns,
+    questions: outcome.result.questions,
+    rollNumberColumns: outcome.result.rollNumberColumns,
   };
+}
+
+/** Same drawImage+toDataURL extraction `use-sheet-reader.ts`'s own `cropToDataUrl` performs — reimplemented here rather than imported, since that file is a 'use client' React hook pulling in browser-lifecycle imports (opencv-loader.ts's script-injection loader) this harness's own separate cv-bootstrapping shouldn't be bundled alongside; only the pure, DOM-free `CropRect` type and `buildReviewItemSpecs` function are actually shared (imported above). */
+function cropRegionToDataUrl(source: HTMLCanvasElement, rect: CropRect): string {
+  const crop = document.createElement('canvas');
+  crop.width = Math.max(1, Math.round(rect.width));
+  crop.height = Math.max(1, Math.round(rect.height));
+  const ctx = crop.getContext('2d');
+  if (!ctx) throw new Error('2D canvas context unavailable');
+  ctx.drawImage(
+    source,
+    rect.left,
+    rect.top,
+    rect.width,
+    rect.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+  return crop.toDataURL('image/png');
 }
 
 /**
@@ -432,6 +504,40 @@ const api: DetectionHarnessApi = {
       );
     }
     return results;
+  },
+
+  runReviewCropCase(spec) {
+    const cv = requireCv();
+    const geometry = computeStockTemplateGeometry(spec.questionCount);
+    const outcome = detectDewarpAndRead(cv, geometry, spec.answers, 0);
+    if (
+      !outcome.cornerDetectionComplete ||
+      !outcome.result ||
+      !outcome.mappedGeometry ||
+      !outcome.dewarpedCanvas
+    ) {
+      return { cornerDetectionComplete: false, crops: [] };
+    }
+
+    const rollRead = readRollNumber(outcome.result.rollNumberColumns);
+    const frameSize = {
+      width: outcome.dewarpedCanvas.width,
+      height: outcome.dewarpedCanvas.height,
+    };
+    const specs = buildReviewItemSpecs(outcome.result, outcome.mappedGeometry, rollRead, frameSize);
+
+    const crops: ReviewCropResult[] = specs.map((itemSpec) => {
+      const dataUrl = cropRegionToDataUrl(outcome.dewarpedCanvas!, itemSpec.cropRect);
+      return {
+        kind: itemSpec.kind,
+        questionNumber: itemSpec.kind === 'question' ? itemSpec.questionNumber : undefined,
+        width: Math.round(itemSpec.cropRect.width),
+        height: Math.round(itemSpec.cropRect.height),
+        isValidPngDataUrl: dataUrl.startsWith('data:image/png;base64,') && dataUrl.length > 100,
+      };
+    });
+
+    return { cornerDetectionComplete: true, crops };
   },
 };
 

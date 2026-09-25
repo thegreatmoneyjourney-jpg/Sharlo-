@@ -1,0 +1,161 @@
+'use client';
+
+import { useState } from 'react';
+import type { QuestionResolution } from '@/lib/scanning/score-answers';
+
+export type ReviewQueueItem =
+  | {
+      id: string;
+      studentId: number;
+      cropDataUrl: string;
+      kind: 'question';
+      questionNumber: number;
+      optionCount: number;
+    }
+  | { id: string; studentId: number; cropDataUrl: string; kind: 'roll-number' };
+
+const CHOICE_BUTTON_CLASSES =
+  'rounded border border-zinc-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700';
+const ACTION_BUTTON_CLASSES =
+  'rounded border border-zinc-600 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-700';
+
+function QuestionResolveRow({
+  item,
+  onResolve,
+}: {
+  item: Extract<ReviewQueueItem, { kind: 'question' }>;
+  onResolve: (resolution: QuestionResolution) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {Array.from({ length: item.optionCount }, (_, optionIndex) => (
+        <button
+          key={optionIndex}
+          type="button"
+          onClick={() => onResolve({ action: 'pick', optionIndex })}
+          className={CHOICE_BUTTON_CLASSES}
+        >
+          {String.fromCharCode(65 + optionIndex)}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => onResolve({ action: 'mark-blank' })}
+        className={ACTION_BUTTON_CLASSES}
+      >
+        Left blank
+      </button>
+      <button
+        type="button"
+        onClick={() => onResolve({ action: 'exclude' })}
+        className={ACTION_BUTTON_CLASSES}
+      >
+        Exclude
+      </button>
+    </div>
+  );
+}
+
+function RollNumberResolveRow({ onResolve }: { onResolve: (rollNumber: string) => void }) {
+  const [value, setValue] = useState('');
+  return (
+    <div className="flex items-center gap-2">
+      <label className="sr-only" htmlFor="review-roll-number-input">
+        Correct roll number
+      </label>
+      <input
+        id="review-roll-number-input"
+        type="text"
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Roll number"
+        className="rounded border border-zinc-600 bg-zinc-800 px-2 py-1.5 text-sm text-white"
+      />
+      <button
+        type="button"
+        disabled={value.trim().length === 0}
+        onClick={() => onResolve(value.trim())}
+        className={`${CHOICE_BUTTON_CLASSES} disabled:cursor-not-allowed disabled:opacity-40`}
+      >
+        Save
+      </button>
+    </div>
+  );
+}
+
+/**
+ * FR-REVIEW-01/02 + FR-DETECT-04's Review Queue — a non-blocking overlay
+ * (not a separate route/step) so resolving items never interrupts the
+ * M2-005-proven continuous scan loop; the teacher opens it between
+ * captures, resolves what they can, and closes it to keep scanning.
+ * Roll-number items resolve by typing the correct number rather than
+ * picking from a roster — there's no class-list/rostering data model in
+ * this codebase yet (a later milestone's job), so this is the only
+ * resolution FR-DETECT-04's "route to Review Queue" wording actually
+ * supports today; see docs/reports/SHARLO-M2-006.md's Flags.
+ */
+export function ReviewQueuePanel({
+  items,
+  onResolveQuestion,
+  onResolveRollNumber,
+  onClose,
+}: {
+  items: ReviewQueueItem[];
+  onResolveQuestion: (
+    item: Extract<ReviewQueueItem, { kind: 'question' }>,
+    resolution: QuestionResolution,
+  ) => void;
+  onResolveRollNumber: (
+    item: Extract<ReviewQueueItem, { kind: 'roll-number' }>,
+    rollNumber: string,
+  ) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="absolute inset-0 z-10 flex flex-col overflow-y-auto bg-black/95 p-4 text-white">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Review Needed ({items.length})</h2>
+        <button type="button" onClick={onClose} className={ACTION_BUTTON_CLASSES}>
+          Close
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-sm text-zinc-300" role="status">
+          Fully graded — every scanned sheet is resolved.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-4">
+          {items.map((item) => (
+            <li key={item.id} className="rounded bg-zinc-900 p-3">
+              <p className="mb-2 text-xs font-medium text-zinc-400">
+                {item.kind === 'question' ? `Question ${item.questionNumber}` : 'Roll number'}
+              </p>
+              {/* eslint-disable-next-line @next/next/no-img-element -- a locally-generated data: URL crop, not a remote image Next's <Image> optimizer has anything to do with */}
+              <img
+                src={item.cropDataUrl}
+                alt={
+                  item.kind === 'question'
+                    ? `Cropped image of question ${item.questionNumber}`
+                    : 'Cropped image of the roll-number grid'
+                }
+                className="mb-2 max-w-full rounded border border-zinc-700"
+              />
+              {item.kind === 'question' ? (
+                <QuestionResolveRow
+                  item={item}
+                  onResolve={(resolution) => onResolveQuestion(item, resolution)}
+                />
+              ) : (
+                <RollNumberResolveRow
+                  onResolve={(rollNumber) => onResolveRollNumber(item, rollNumber)}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

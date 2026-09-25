@@ -3,9 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { loadOpenCv } from '@/lib/scanning/opencv-loader';
 import type { QuestionResult } from '@/lib/scanning/bubble-fill';
-import { readRollNumber } from '@/lib/scanning/roll-number';
-import { scoreSheet } from '@/lib/scanning/score-answers';
-import type { ScoredSheet } from '@/lib/scanning/score-answers';
+import { applyReviewResolution, rescoreSheet, scoreSheet } from '@/lib/scanning/score-answers';
+import type { QuestionResolution, ScoredSheet } from '@/lib/scanning/score-answers';
 import type { TemplateGeometry } from '@/lib/templates/geometry';
 import { useCameraStream } from '../../scan/use-camera-stream';
 import { useCornerDetection } from '../../scan/use-corner-detection';
@@ -13,13 +12,24 @@ import { useAutoCapture } from '../../scan/use-auto-capture';
 import { useManualCapture } from '../../scan/use-manual-capture';
 import type { CapturedFrame } from '../../scan/capture-video-frame';
 import { useSheetReader } from './use-sheet-reader';
+import { ReviewQueuePanel } from './review-queue-panel';
+import type { ReviewQueueItem } from './review-queue-panel';
+
+/** One scanned student sheet, accumulated across the whole scan-students session (M2-006) — `scored` is re-derived via `rescoreSheet` whenever a review-queue item for this student is resolved, never hand-edited in place. */
+interface StudentResult {
+  id: number;
+  rollNumber: string | null;
+  scored: ScoredSheet;
+}
 
 type Mode =
   | { phase: 'capture-key'; error?: string }
   | {
       phase: 'scan-students';
       key: QuestionResult[];
-      lastScan?: { rollNumber: string | null; score: ScoredSheet };
+      students: StudentResult[];
+      reviewQueue: ReviewQueueItem[];
+      showReviewQueue: boolean;
     };
 
 const SECONDARY_BUTTON_CLASSES =
@@ -91,11 +101,17 @@ export function ExamScanFlow({
 
     setMode((prev) => {
       if (prev.phase === 'capture-key') {
-        const unresolved = readResult.questions
+        const unresolved = readResult.result.questions
           .map((q, i) => (q.outcome === 'answered' ? null : i + 1))
           .filter((n): n is number => n !== null);
         if (unresolved.length === 0) {
-          return { phase: 'scan-students', key: readResult.questions };
+          return {
+            phase: 'scan-students',
+            key: readResult.result.questions,
+            students: [],
+            reviewQueue: [],
+            showReviewQueue: false,
+          };
         }
         return {
           phase: 'capture-key',
@@ -103,15 +119,74 @@ export function ExamScanFlow({
         };
       }
 
-      const rollRead = readRollNumber(readResult.rollNumberColumns);
-      const score = scoreSheet(readResult.questions, prev.key);
+      const studentId = capturedFrame.capturedAt;
+      const rollNumber = readResult.rollRead.status === 'read' ? readResult.rollRead.value : null;
+      const scored = scoreSheet(readResult.result.questions, prev.key);
+      const newStudent: StudentResult = { id: studentId, rollNumber, scored };
+
+      const newQueueItems: ReviewQueueItem[] = readResult.reviewCrops.map((crop) =>
+        crop.kind === 'question'
+          ? {
+              id: `${studentId}-q${crop.questionNumber}`,
+              studentId,
+              cropDataUrl: crop.cropDataUrl,
+              kind: 'question',
+              questionNumber: crop.questionNumber,
+              optionCount: geometry.questions[crop.questionNumber - 1]?.options.length ?? 0,
+            }
+          : {
+              id: `${studentId}-roll`,
+              studentId,
+              cropDataUrl: crop.cropDataUrl,
+              kind: 'roll-number',
+            },
+      );
+
       return {
-        phase: 'scan-students',
-        key: prev.key,
-        lastScan: { rollNumber: rollRead.status === 'read' ? rollRead.value : null, score },
+        ...prev,
+        students: [...prev.students, newStudent],
+        reviewQueue: [...prev.reviewQueue, ...newQueueItems],
       };
     });
-  }, [readResult, capturedFrame]);
+  }, [readResult, capturedFrame, geometry]);
+
+  function resolveQuestionItem(
+    item: Extract<ReviewQueueItem, { kind: 'question' }>,
+    resolution: QuestionResolution,
+  ) {
+    setMode((prev) => {
+      if (prev.phase !== 'scan-students') return prev;
+      const keyEntry = prev.key[item.questionNumber - 1]!;
+      const students = prev.students.map((student) => {
+        if (student.id !== item.studentId) return student;
+        const scores = [...student.scored.scores];
+        scores[item.questionNumber - 1] = applyReviewResolution(resolution, keyEntry);
+        return { ...student, scored: rescoreSheet(scores) };
+      });
+      return {
+        ...prev,
+        students,
+        reviewQueue: prev.reviewQueue.filter((queued) => queued.id !== item.id),
+      };
+    });
+  }
+
+  function resolveRollNumberItem(
+    item: Extract<ReviewQueueItem, { kind: 'roll-number' }>,
+    rollNumber: string,
+  ) {
+    setMode((prev) => {
+      if (prev.phase !== 'scan-students') return prev;
+      const students = prev.students.map((student) =>
+        student.id === item.studentId ? { ...student, rollNumber } : student,
+      );
+      return {
+        ...prev,
+        students,
+        reviewQueue: prev.reviewQueue.filter((queued) => queued.id !== item.id),
+      };
+    });
+  }
 
   if (camera.state.status === 'error') {
     return (
@@ -167,27 +242,33 @@ export function ExamScanFlow({
             Key captured — scan student sheets
           </div>
         )}
-        {mode.phase === 'scan-students' && mode.lastScan && (
-          <div
-            className="absolute bottom-20 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 rounded bg-black/70 px-4 py-3 text-center text-white"
-            role="status"
-          >
-            <span className="text-xs text-zinc-300">
-              {mode.lastScan.rollNumber
-                ? `Roll #${mode.lastScan.rollNumber}`
-                : 'Roll number not read'}
-            </span>
-            <span className="text-lg font-semibold">
-              {mode.lastScan.score.correctCount} / {mode.lastScan.score.scores.length}
-            </span>
-            {mode.lastScan.score.needsReviewCount > 0 && (
-              <span className="text-xs text-amber-300">
-                {mode.lastScan.score.needsReviewCount} question
-                {mode.lastScan.score.needsReviewCount > 1 ? 's' : ''} need review
-              </span>
-            )}
-          </div>
-        )}
+        {mode.phase === 'scan-students' &&
+          mode.students.length > 0 &&
+          (() => {
+            const lastStudent = mode.students[mode.students.length - 1]!;
+            const gradedCount = lastStudent.scored.scores.length - lastStudent.scored.excludedCount;
+            return (
+              <div
+                className="absolute bottom-20 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 rounded bg-black/70 px-4 py-3 text-center text-white"
+                role="status"
+              >
+                <span className="text-xs text-zinc-300">
+                  {lastStudent.rollNumber
+                    ? `Roll #${lastStudent.rollNumber}`
+                    : 'Roll number not read'}
+                </span>
+                <span className="text-lg font-semibold">
+                  {lastStudent.scored.correctCount} / {gradedCount}
+                </span>
+                {lastStudent.scored.needsReviewCount > 0 && (
+                  <span className="text-xs text-amber-300">
+                    {lastStudent.scored.needsReviewCount} question
+                    {lastStudent.scored.needsReviewCount > 1 ? 's' : ''} need review
+                  </span>
+                )}
+              </div>
+            );
+          })()}
         <button
           type="button"
           onClick={manualCapture.capture}
@@ -196,7 +277,34 @@ export function ExamScanFlow({
         >
           Take Photo
         </button>
+        {mode.phase === 'scan-students' && mode.showReviewQueue && (
+          <ReviewQueuePanel
+            items={mode.reviewQueue}
+            onResolveQuestion={resolveQuestionItem}
+            onResolveRollNumber={resolveRollNumberItem}
+            onClose={() =>
+              setMode((prev) =>
+                prev.phase === 'scan-students' ? { ...prev, showReviewQueue: false } : prev,
+              )
+            }
+          />
+        )}
       </div>
+      {mode.phase === 'scan-students' && mode.students.length > 0 && (
+        <button
+          type="button"
+          onClick={() =>
+            setMode((prev) =>
+              prev.phase === 'scan-students' ? { ...prev, showReviewQueue: true } : prev,
+            )
+          }
+          className="absolute top-2 left-2 rounded bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80"
+        >
+          {mode.reviewQueue.length > 0
+            ? `Review Needed (${mode.reviewQueue.length})`
+            : 'Fully graded'}
+        </button>
+      )}
       <button
         type="button"
         onClick={onRestart}

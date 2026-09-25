@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scoreQuestion, scoreSheet } from './score-answers';
+import { applyReviewResolution, rescoreSheet, scoreQuestion, scoreSheet } from './score-answers';
 import type { QuestionResult } from './bubble-fill';
 
 const answered = (optionIndex: number): QuestionResult => ({ outcome: 'answered', optionIndex });
@@ -65,5 +65,66 @@ describe('scoreSheet', () => {
     const key: QuestionResult[] = [answered(0), answered(1), answered(2)];
     const result = scoreSheet(key, key);
     expect(result).toMatchObject({ correctCount: 3, incorrectCount: 0, needsReviewCount: 0 });
+  });
+
+  it('starts with zero excludedCount — only manual resolution ever produces an excluded question', () => {
+    const student: QuestionResult[] = [answered(0), flagged];
+    const key: QuestionResult[] = [answered(0), answered(1)];
+    expect(scoreSheet(student, key).excludedCount).toBe(0);
+  });
+});
+
+describe('applyReviewResolution', () => {
+  it('marks a picked answer correct when it matches the key', () => {
+    expect(applyReviewResolution({ action: 'pick', optionIndex: 2 }, answered(2))).toEqual({
+      outcome: 'correct',
+    });
+  });
+
+  it('marks a picked answer incorrect when it does not match the key', () => {
+    expect(applyReviewResolution({ action: 'pick', optionIndex: 1 }, answered(2))).toEqual({
+      outcome: 'incorrect',
+    });
+  });
+
+  it('marks "left blank" incorrect, same as an automatically-detected blank', () => {
+    expect(applyReviewResolution({ action: 'mark-blank' }, answered(2))).toEqual({
+      outcome: 'incorrect',
+    });
+  });
+
+  it('marks "exclude" as excluded regardless of the key', () => {
+    expect(applyReviewResolution({ action: 'exclude' }, answered(2))).toEqual({
+      outcome: 'excluded',
+    });
+    expect(applyReviewResolution({ action: 'exclude' }, flagged)).toEqual({ outcome: 'excluded' });
+  });
+
+  it('never guesses a pick/blank resolution against an unresolved key entry', () => {
+    expect(applyReviewResolution({ action: 'pick', optionIndex: 0 }, blank)).toEqual({
+      outcome: 'needs-review',
+    });
+    expect(applyReviewResolution({ action: 'mark-blank' }, flagged)).toEqual({
+      outcome: 'needs-review',
+    });
+  });
+});
+
+describe('rescoreSheet', () => {
+  it('recomputes tallies, including excludedCount, from an edited scores array', () => {
+    const edited = [
+      { outcome: 'correct' as const },
+      { outcome: 'excluded' as const },
+      { outcome: 'incorrect' as const },
+      { outcome: 'needs-review' as const },
+    ];
+    const result = rescoreSheet(edited);
+    expect(result).toMatchObject({
+      correctCount: 1,
+      incorrectCount: 1,
+      needsReviewCount: 1,
+      excludedCount: 1,
+    });
+    expect(result.scores).toEqual(edited);
   });
 });
