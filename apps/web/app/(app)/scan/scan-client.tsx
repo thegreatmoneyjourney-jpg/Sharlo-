@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { loadOpenCv } from '@/lib/scanning/opencv-loader';
 import { useCameraStream } from './use-camera-stream';
 import { useCornerDetection } from './use-corner-detection';
+import { useAutoCapture } from './use-auto-capture';
 import type { CameraErrorReason } from '@/lib/scanning/camera';
 import type { DetectedCorner } from '@/lib/scanning/corner-markers';
 
@@ -41,19 +42,23 @@ const CAMERA_ERROR_COPY: Record<CameraErrorReason, { message: string; canRetry: 
 
 /**
  * Client-only scan page body. Covers OpenCV.js lazy-load (M1-001), the
- * camera capture pipeline (M1-002), and corner marker detection running
- * continuously against the live frames (M1-003) with a visual overlay
- * on detected corners. The stability gate, perspective transform, and
- * auto-capture that act on a *stable* detection are M1-004 onward —
- * this page detects and shows corners but doesn't yet act on them.
+ * camera capture pipeline (M1-002), corner marker detection running
+ * continuously against the live frames (M1-003), and the stability gate
+ * + auto-capture trigger (M1-004): once all 4 corners hold steady for
+ * ~500ms, the current frame is grabbed automatically. Acting further on
+ * a captured frame — perspective transform, grid sampling, real capture
+ * feedback (beep/vibration) — is M1-005 onward; this page detects,
+ * stabilizes, and captures, but doesn't yet dewarp or score anything.
  */
 export default function ScanClient() {
   const [openCvPhase, setOpenCvPhase] = useState<OpenCvPhase>('loading');
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const thumbnailRef = useRef<HTMLCanvasElement>(null);
   const camera = useCameraStream(videoRef);
   const ready = openCvPhase === 'ready' && camera.state.status === 'live';
-  const { result: corners, measuredFps } = useCornerDetection(videoRef, ready);
+  const autoCapture = useAutoCapture(videoRef);
+  const { result: corners, measuredFps } = useCornerDetection(videoRef, ready, autoCapture.onFrame);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,9 +81,9 @@ export default function ScanClient() {
 
   // Draws the current detection result on a canvas overlaid on the video
   // — a green dot per confirmed corner once all 4 are found, amber for
-  // whichever subset is found so far. Purely a visual aid for this task
-  // (proving the detection loop actually runs against live frames); the
-  // stability gate and auto-capture that act on this result are M1-004.
+  // whichever subset is found so far. Purely a visual aid proving the
+  // detection loop actually runs against live frames (M1-003); the
+  // stability gate driven off these same per-frame results is below.
   useEffect(() => {
     const canvas = overlayRef.current;
     const video = videoRef.current;
@@ -107,6 +112,29 @@ export default function ScanClient() {
       ctx.stroke();
     }
   }, [corners]);
+
+  // Renders the most recently auto-captured frame as a small thumbnail —
+  // visual proof the stability gate actually grabbed a real frame, not
+  // just that its internal state machine reached 'captured'. Acting on
+  // this frame (dewarp, grid sampling) is M1-005 onward.
+  useEffect(() => {
+    const canvas = thumbnailRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!autoCapture.capturedFrame) return;
+
+    const { imageData } = autoCapture.capturedFrame;
+    const full = document.createElement('canvas');
+    full.width = imageData.width;
+    full.height = imageData.height;
+    const fullCtx = full.getContext('2d');
+    if (!fullCtx) return;
+    fullCtx.putImageData(imageData, 0, 0);
+    ctx.drawImage(full, 0, 0, canvas.width, canvas.height);
+  }, [autoCapture.capturedFrame]);
 
   if (openCvPhase === 'error') {
     return (
@@ -173,6 +201,27 @@ export default function ScanClient() {
       {measuredFps !== null && (
         <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 font-mono text-xs text-white">
           {measuredFps.toFixed(1)} fps
+        </div>
+      )}
+      {autoCapture.status === 'stabilizing' && (
+        <div
+          className="absolute right-2 bottom-2 rounded bg-black/60 px-2 py-1 font-mono text-xs text-white"
+          role="status"
+        >
+          Hold steady… {Math.round(autoCapture.progress * 100)}%
+        </div>
+      )}
+      {(autoCapture.status === 'captured' || autoCapture.status === 'cooldown') && (
+        <div className="absolute right-2 bottom-2 flex flex-col items-end gap-1" role="status">
+          <span className="rounded bg-emerald-600/90 px-2 py-1 font-mono text-xs text-white">
+            Captured
+          </span>
+          <canvas
+            ref={thumbnailRef}
+            width={90}
+            height={117}
+            className="rounded border border-white/50"
+          />
         </div>
       )}
     </div>

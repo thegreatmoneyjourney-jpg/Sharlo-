@@ -2,12 +2,25 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScanClient from './scan-client';
 import type { CameraState } from './use-camera-stream';
+import type { CapturedFrame } from './use-auto-capture';
 
-const { loadOpenCvMock, useCameraStreamMock, useCornerDetectionMock } = vi.hoisted(() => ({
-  loadOpenCvMock: vi.fn(),
-  useCameraStreamMock: vi.fn(),
-  useCornerDetectionMock: vi.fn(),
-}));
+// jsdom doesn't reliably provide a working ImageData constructor, and
+// scan-client's thumbnail effect never actually reads pixel data in
+// tests anyway (canvas.getContext('2d') is null in jsdom) — a plain
+// stand-in with the right shape is enough for this fixture.
+const FAKE_CAPTURED_FRAME = {
+  imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+  corners: {},
+  capturedAt: 1000,
+} as unknown as CapturedFrame;
+
+const { loadOpenCvMock, useCameraStreamMock, useCornerDetectionMock, useAutoCaptureMock } =
+  vi.hoisted(() => ({
+    loadOpenCvMock: vi.fn(),
+    useCameraStreamMock: vi.fn(),
+    useCornerDetectionMock: vi.fn(),
+    useAutoCaptureMock: vi.fn(),
+  }));
 
 vi.mock('@/lib/scanning/opencv-loader', () => ({
   loadOpenCv: loadOpenCvMock,
@@ -26,6 +39,14 @@ vi.mock('./use-corner-detection', () => ({
   useCornerDetection: useCornerDetectionMock,
 }));
 
+// Same rationale as use-corner-detection above: the real gate is plain
+// TypeScript and could run in jsdom, but it's driven off a captured
+// <video> frame via canvas, which still needs the real detection loop
+// wired through. See docs/reports/SHARLO-M1-004.md.
+vi.mock('./use-auto-capture', () => ({
+  useAutoCapture: useAutoCaptureMock,
+}));
+
 function mockCamera(state: CameraState, retry = vi.fn()) {
   useCameraStreamMock.mockReturnValue({ state, retry });
 }
@@ -34,6 +55,12 @@ const OPENCV_READY = Promise.resolve({ cv: { getBuildInformation: () => 'x' } })
 
 beforeEach(() => {
   useCornerDetectionMock.mockReturnValue({ result: null, measuredFps: null });
+  useAutoCaptureMock.mockReturnValue({
+    status: 'searching',
+    progress: 0,
+    capturedFrame: null,
+    onFrame: vi.fn(),
+  });
 });
 
 afterEach(() => {
@@ -41,6 +68,7 @@ afterEach(() => {
   loadOpenCvMock.mockReset();
   useCameraStreamMock.mockReset();
   useCornerDetectionMock.mockReset();
+  useAutoCaptureMock.mockReset();
 });
 
 describe('ScanClient', () => {
@@ -129,7 +157,11 @@ describe('ScanClient', () => {
     });
     // Called at least once with active=true — the useEffect dependency
     // change (loading -> ready) may also produce an earlier false call.
-    expect(useCornerDetectionMock).toHaveBeenCalledWith(expect.anything(), true);
+    expect(useCornerDetectionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      true,
+      expect.any(Function),
+    );
   });
 
   it('shows the measured fps once corner detection reports one', async () => {
@@ -155,5 +187,77 @@ describe('ScanClient', () => {
       expect(document.querySelector('video')).toBeInTheDocument();
     });
     expect(screen.queryByText(/fps/)).not.toBeInTheDocument();
+  });
+
+  it('shows stabilizing progress while the auto-capture gate is timing a hold', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'stabilizing',
+      progress: 0.42,
+      capturedFrame: null,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Hold steady… 42%')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Captured')).not.toBeInTheDocument();
+  });
+
+  it('shows a captured indicator once the auto-capture gate fires', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'captured',
+      progress: 1,
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Captured')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Hold steady/)).not.toBeInTheDocument();
+  });
+
+  it('keeps showing the captured indicator through cooldown, not just the instant of capture', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'cooldown',
+      progress: 1,
+      capturedFrame: FAKE_CAPTURED_FRAME,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Captured')).toBeInTheDocument();
+    });
+  });
+
+  it('shows neither stabilizing progress nor a captured indicator while still searching', async () => {
+    loadOpenCvMock.mockReturnValue(OPENCV_READY);
+    mockCamera({ status: 'live' });
+    useAutoCaptureMock.mockReturnValue({
+      status: 'searching',
+      progress: 0,
+      capturedFrame: null,
+      onFrame: vi.fn(),
+    });
+
+    render(<ScanClient />);
+
+    await waitFor(() => {
+      expect(document.querySelector('video')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Hold steady/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Captured')).not.toBeInTheDocument();
   });
 });
