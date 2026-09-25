@@ -261,6 +261,78 @@ admin_audit_log (
   metadata jsonb, ip_address inet, created_at
 )
 
+-- Time-limited account suspension (Addendum 3, FR-ADMIN-03) -- added to `users`:
+-- suspended_until timestamptz null. NULL = not suspended. A background check
+-- (same lightweight scheduler class as the Recovery Key reminder job, ADR-0011)
+-- or a plain "is now() < suspended_until" check at auth time lifts it automatically
+-- at expiry -- no separate "unsuspend" admin action required.
+
+-- Per-user scan-quota override (Addendum 3, FR-ADMIN-14) -- added to `users`:
+-- quota_override_sheets int null, quota_override_expires_at timestamptz null.
+-- NULL override = no override, standard FR-BILLING-06 weekly cap applies.
+-- Read alongside `usage_counters` at the same enforcement point, not a parallel
+-- limit system.
+
+-- Integration credentials (Addendum 3, FR-ADMIN-15, ADR-0017) -- encrypted at
+-- rest, decrypted only in-memory server-side at point of use, write-only from
+-- the admin UI's perspective (never returned in decrypted form once saved).
+-- Every provider adapter (Resend, Paddle, Bank Alfalah, the AI provider below)
+-- reads its credential(s) from here, never from a hardcoded env var.
+integration_credentials (
+  id uuid pk, provider text not null, -- 'resend' | 'paddle' | 'bank_alfalah' | 'ai_support'
+  key_name text not null, -- e.g. 'api_key', 'webhook_secret' -- a provider may need more than one
+  encrypted_value bytea not null, -- AES-256-GCM under a server-held envelope key
+  updated_at, updated_by uuid references users(id),
+  unique (provider, key_name)
+)
+
+-- Support inbox + AI-drafted replies (Addendum 3, FR-ADMIN-10/12, ADR-0016) --
+-- ordinary plaintext tables, NOT held to NFR-SEC-02's client-side-encryption
+-- standard: this is the founder's own support-operations data (has to be
+-- human-readable to be useful), not student data. The privacy-sensitive
+-- boundary this feature actually protects is the outbound call to the AI
+-- provider (NFR-SEC-15's sanitization pass), not storage here -- see ADR-0016.
+support_tickets (
+  id uuid pk, requester_email text not null, subject text,
+  status text check in ('open','resolved'), created_at, updated_at
+)
+support_messages (
+  id uuid pk, ticket_id uuid references support_tickets(id),
+  sender_type text check in ('customer','admin','ai_draft'),
+  body text not null,
+  sent_at timestamptz null, -- null for an ai_draft not yet reviewed/sent -- see ADR-0016 invariant
+  created_at
+)
+-- Founder-authored, generic-product-information-only (ADR-0016 decision 2) --
+-- never populated from or referencing any individual user's/student's data.
+support_kb_articles (
+  id uuid pk, title text not null, body text not null,
+  updated_at, updated_by uuid references users(id)
+)
+
+-- Financial ledger (Addendum 3, FR-ADMIN-13) -- extends the existing
+-- `payment_events`/`subscriptions` billing data (§10) with the
+-- founder-facing record-keeping views/tables it doesn't yet cover.
+-- Cash-basis, consistent with §10's existing MRR/revenue-dashboard note --
+-- not a new accrual-accounting system.
+refunds (
+  id uuid pk, payment_event_id uuid references payment_events(id),
+  amount_minor_units bigint not null, currency text not null,
+  reason text not null, is_chargeback bool not null default false,
+  created_at, created_by uuid references users(id)
+)
+expenses (
+  id uuid pk, description text not null, amount_minor_units bigint not null,
+  currency text not null, category text, incurred_on date not null,
+  created_at, created_by uuid references users(id)
+)
+-- Paddle payout summary and the separate Bank Alfalah/Pakistan ledger are
+-- both derived views over `payment_events` (already carries provider +
+-- amount + currency + timestamps) rather than new source-of-truth tables --
+-- kept as two distinct report views specifically because Paddle payouts and
+-- direct PKR settlements have different tax/reporting treatment, not because
+-- the underlying data needs duplicating.
+
 -- Addendum 2, FR-PUBLISH-* — the ONE deliberate exception to "no student data
 -- lives here." Full design, why it's safe, and why it's the only one: §7a.
 public_results (
@@ -365,6 +437,8 @@ interface PaymentProviderAdapter {
 
 **Finance/analyst note:** yearly subscriptions are cash received today for service delivered over 12 months. For v1, the admin revenue dashboard shows cash-basis MRR/revenue (simplest, matches what Paddle/Bank Alfalah payouts actually look like) with gross vs. net-of-processor-fees both visible; proper ratable deferred-revenue recognition (accrual-basis, GAAP-style) is called out as a deliberate v1 simplification in `docs/TASKS.md` M5, worth revisiting once a bookkeeper/accountant is in the loop rather than something to over-build into the admin panel now.
 
+**Addendum 3 (`FR-ADMIN-13`):** a failed-renewal webhook event (already ingested into `payment_events` per NFR-SEC-11) is surfaced as a dunning-list row — customers whose payment failed, for founder follow-up — rather than only silently updating `subscriptions.status` to `past_due`. Refunds gain an explicit `reason` field (`refunds`, §6) distinguishing a voluntary refund from a chargeback, since those are reported very differently for tax/accounting purposes. Both stay cash-basis, consistent with the note above — this is record-keeping richness, not a new accounting model.
+
 ---
 
 ## 11. Admin panel — structural guarantee, not a policy
@@ -383,6 +457,8 @@ Also required:
 - `robots.txt`/meta-robots `noindex, nofollow` on the entire subdomain.
 - Every mutating admin action server-side authorized against the acting admin's role and written to `admin_audit_log` (§6, §8).
 
+**Addendum 3 additions (support inbox/AI drafting, finance ledger, credentials store) don't weaken this guarantee.** All of their data (`support_tickets`, `support_messages`, `support_kb_articles`, `refunds`, `expenses`, `integration_credentials`) is operational/founder-facing, not student data — none of it is Drive content, a master key, or a wrapping key, so the structural argument in point 1 above still holds without modification. `integration_credentials` (`ADR-0017`) is the one table here holding real secrets; it's encrypted at rest and write-only from the admin UI specifically so a compromised admin session can rotate credentials but not read a currently-stored one back in the clear.
+
 **Recommended hardening beyond the kickoff spec's baseline [DECISION NEEDED, non-blocking]:** for a solo-founder-operated admin panel, a single compromised admin credential is a big deal (refunds, plan changes, feature flags all in one place). Recommend adding a network-layer restriction in front of the 2FA login — e.g., Cloudflare Access with email-OTP, rather than a strict IP allowlist (which is painful while traveling). Cheap to add, meaningfully raises the bar beyond password+2FA alone. Flagged as an M7 task, not required for the admin panel to function.
 
 ---
@@ -395,7 +471,9 @@ Also required:
 - **Orchestration:** Docker Compose (Postgres, Fastify API, Caddy) — no Kubernetes; not justified at this scale and would cost more solo-founder time than it saves.
 - **Postgres:** self-hosted in the same Compose stack initially (per the kickoff prompt's "self-hosted API + PostgreSQL"), with nightly `pg_dump` backups shipped to S3-compatible object storage (Hetzner Object Storage or Backblaze B2) plus periodic Hetzner volume snapshots. Managed Postgres is a reasonable later upgrade if backup/ops burden grows — not needed to start.
 - **Object storage:** S3-compatible bucket for non-sensitive template geometry/assets only (§6).
-- **Transactional email: Resend.** Needed for the Recovery Key reminder cadence (ADR-0005 addendum) and later School-invite/billing-notice emails. See ADR-0011. Requires DKIM/SPF/DMARC setup on the sending domain as an M0 infra task, and a lightweight scheduled-job mechanism (in-process daily scheduler is sufficient at this scale — no job-queue infra needed yet) to drive the 7-day/30-day reminder checks.
+- **Transactional email: Resend.** Needed for the Recovery Key reminder cadence (ADR-0005 addendum) and later School-invite/billing-notice emails. See ADR-0011 (including its Addendum 3 guardrails: never self-hosted SMTP, never multi-account sending rotation, role inboxes via a free-tier hosted provider). Requires DKIM/SPF/DMARC setup on the sending domain as an M0 infra task, and a lightweight scheduled-job mechanism (in-process daily scheduler is sufficient at this scale — no job-queue infra needed yet) to drive the 7-day/30-day reminder checks.
+- **AI provider (Addendum 3, `ADR-0016`):** a pluggable, provider-agnostic dependency for support-reply drafting only — never in a core product/data-processing path (that remains `ADR-0014`'s "no AI" boundary). Configured via `integration_credentials` (`ADR-0017`), not an env var.
+- **Distribution: PWA only, confirmed** (CLAUDE.md non-negotiable — no native app). The only recurring hosting cost is the domain; this VPS already hosts web/API/DB, no separate app-store hosting infrastructure. See `docs/TASKS.md` Backlog `BACKLOG-002` for the post-revenue, non-blocking Trusted Web Activity (Play Store) wrapper — same PWA, no separate codebase, no Apple App Store listing (unfavorable review policy for thin PWA wrappers; Safari's "Add to Home Screen" already covers iOS adequately).
 - **Domains:** marketing + app on the apex/`app.` subdomain via the main Next.js deployment; admin on its own subdomain (§11) — ideally a genuinely separate deploy target so a marketing-site bug can't accidentally expose admin routes.
 - **CI/CD:** GitHub Actions runs `npm run ci` (lint + typecheck + test) on every push/PR; a separate deploy workflow (SSH + `docker compose pull && up -d`, or a small container registry push/pull) runs on merge to `main`. No blue/green or k8s-style rollout needed at this scale — brief downtime on deploy is acceptable for v1 and should be explicitly, not silently, accepted.
 
@@ -441,5 +519,9 @@ Also required:
 5. **Gulf PPP pricing — RESOLVED, confirmed 2026-09-24.** Seed table now in `docs/SRS.md` §5.9a.
 6. **§6, §7a, ADR-0012 (Public Result Announcement) — RESOLVED, confirmed 2026-09-24 (Addendum 2), including the storage/access-model design.** The one deliberate exception to the zero-server-plaintext architecture; full design in §7a.
 7. **`docs/SRS.md` NFR-SEC-12 (Free-tier gating given the client-side architecture) — RESOLVED, confirmed.** Server-sourced entitlement as source of truth, real rejection wherever a server endpoint genuinely exists; founder explicitly declined moving computation server-side to get stronger enforcement (the privacy model, `ADR-0001`, isn't a trade-off target). Founder added one refinement: the entitlement fetch caches locally with a bounded freshness window (~24h default) and tolerates offline use, re-validating on reconnect rather than requiring a live round-trip per check — full design in `ADR-0015`, written specifically so `BACKLOG-001` (offline-first scanning) has this already figured out whenever it's built.
+8. **M1 sign-off + real-device validation gate — RESOLVED, confirmed 2026-09-25 (Addendum 3).** `docs/reports/SHARLO-M1-010.md`'s three flagged judgment calls (synthetic generator fixtures, detection-engine scope narrowing, the synthetic-vs-real-world accuracy disclosure) all approved as-is. New task `M1-011` (real-device pilot against real printed/hand-filled/scanned sheets) added to close the real-world half of `NFR-ACC-01`–`04` — does not block M2 or any later milestone, but does block `M7-011` (launch sign-off); see `docs/TASKS.md` M1/M7.
+9. **AI-assisted support reply drafting (`FR-ADMIN-12`) — RESOLVED, confirmed 2026-09-25 (Addendum 3), `ADR-0016`.** A new, separately-approved AI use case, explicitly distinct from and not in conflict with `ADR-0014`'s "no AI on student data" boundary — support-ticket drafting only, never auto-sent, mandatory PII-sanitization pass before any third-party API call (`NFR-SEC-15`).
+10. **Admin-managed integration credentials — RESOLVED, confirmed 2026-09-25 (Addendum 3), `ADR-0017`.** Every integration secret (Resend, Paddle, Bank Alfalah, the new AI provider) moves to an encrypted, admin-panel-writable store, never a plaintext env var. Ships in two stages: the table + minimal write path pulled forward into `M0-010` (needed immediately by `M0-008`), the polished admin UI in `M5-012`.
+11. **Admin-panel finance/ops scope (`FR-ADMIN-13`/`14`/`15`) — RESOLVED, confirmed 2026-09-25 (Addendum 3).** Financial ledger (dunning, payout/PKR ledger split, refund reasons, expenses, net profit), per-user quota override, and the credentials panel above all folded into the existing M5 (Admin Panel) milestone rather than a new parallel milestone — reasoning in `docs/reports/SHARLO-M0-011.md`: all three are admin-panel-shaped work that already needs M5-001/002's subdomain/auth/audit-log infrastructure, and splitting them into a separate milestone would fragment one cohesive area for no dependency-graph benefit.
 
-Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Nothing in this numbered list is still open as of this round — the one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of Addendum 1 or 2's decisions.
+Items 1–3 no longer block any M3 work. Individual-teacher M3 tasks were never blocked; School-plan-specific M3 tasks (M3-014 onward) are now unblocked per `docs/TASKS.md`. Items 5–7 unblock the corresponding parts of M4 and the new M8–M12. Items 8–11 are Addendum 3's additions, all resolved on arrival — nothing from this round is open. The one item that remains open project-wide is the admin-subdomain network-layer hardening recommendation (§11 of this document, task `M7-007`), tracked separately in `docs/SRS.md` §8 since it predates this list and isn't part of any addendum's decisions.
