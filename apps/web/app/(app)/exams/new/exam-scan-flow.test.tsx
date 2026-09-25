@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExamScanFlow } from './exam-scan-flow';
 import { computeStockTemplateGeometry } from '@/lib/templates/geometry';
@@ -278,6 +278,70 @@ describe('ExamScanFlow', () => {
 
     // 19 questions actually count (the excluded one no longer appears in the denominator).
     expect(await screen.findByText('19 / 19')).toBeInTheDocument();
+  });
+
+  it("purges a review item's image after the retention window, but keeps the item resolvable (M2-007)", async () => {
+    // Deliberately avoids vi.useFakeTimers(): mixing fake timers with
+    // @testing-library's own setTimeout-based async polling (findBy*/
+    // waitFor) is unreliable to get right and risks a flaky or hanging
+    // test — exactly what CLAUDE.md's CI rules forbid papering over.
+    // Instead, captures the interval callback exam-scan-flow.tsx
+    // registers and invokes it directly with Date.now() mocked to
+    // simulate real time having passed — proves the same wiring without
+    // fighting the timer mechanism itself.
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    const studentQuestions: QuestionResult[] = Array.from({ length: 20 }, (_, i) =>
+      i === 3 ? { outcome: 'flagged' } : { outcome: 'answered', optionIndex: 0 },
+    );
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(
+        studentQuestions,
+        [{ outcome: 'answered', optionIndex: 5 }],
+        [{ kind: 'question', questionNumber: 4, cropDataUrl: 'data:image/png;base64,FAKE' }],
+      ),
+    );
+    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /review needed \(1\)/i }));
+    expect(screen.getByAltText(/question 4/i)).toBeInTheDocument();
+
+    const purgeCall = setIntervalSpy.mock.calls.find(([, ms]) => typeof ms === 'number');
+    expect(purgeCall).toBeDefined();
+    const purgeCallback = purgeCall![0] as () => void;
+
+    const realNow = Date.now();
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 16 * 60 * 1000); // 16 min > the 15-min retention window
+    act(() => {
+      purgeCallback();
+    });
+    dateNowSpy.mockRestore();
+    setIntervalSpy.mockRestore();
+
+    // The image is gone, but the item and its resolve controls remain.
+    expect(screen.queryByAltText(/question 4/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/image no longer available/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /review needed \(1\)/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'A' }));
+
+    expect(await screen.findByRole('button', { name: /fully graded/i })).toBeInTheDocument();
   });
 
   it('adds an unreadable roll number to the Review Needed queue, and typing the correct one resolves it (M2-006)', async () => {
