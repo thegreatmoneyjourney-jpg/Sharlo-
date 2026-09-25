@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { loadOpenCv } from '@/lib/scanning/opencv-loader';
 import { useCameraStream } from './use-camera-stream';
+import { useCornerDetection } from './use-corner-detection';
 import type { CameraErrorReason } from '@/lib/scanning/camera';
+import type { DetectedCorner } from '@/lib/scanning/corner-markers';
 
 type OpenCvPhase = 'loading' | 'ready' | 'error';
 
@@ -38,18 +40,20 @@ const CAMERA_ERROR_COPY: Record<CameraErrorReason, { message: string; canRetry: 
 };
 
 /**
- * Client-only scan page body. Rendering here stays intentionally minimal —
- * this proves the OpenCV.js lazy-load lifecycle (M1-001) and the camera
- * capture pipeline (M1-002): permission handling, live preview, a clear
- * recovery path when permission is denied. Corner detection running
- * against the live frames, the stability gate, and auto-capture are
- * M1-003 onward — this page doesn't yet do anything with the frames
- * beyond displaying them.
+ * Client-only scan page body. Covers OpenCV.js lazy-load (M1-001), the
+ * camera capture pipeline (M1-002), and corner marker detection running
+ * continuously against the live frames (M1-003) with a visual overlay
+ * on detected corners. The stability gate, perspective transform, and
+ * auto-capture that act on a *stable* detection are M1-004 onward —
+ * this page detects and shows corners but doesn't yet act on them.
  */
 export default function ScanClient() {
   const [openCvPhase, setOpenCvPhase] = useState<OpenCvPhase>('loading');
   const videoRef = useRef<HTMLVideoElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
   const camera = useCameraStream(videoRef);
+  const ready = openCvPhase === 'ready' && camera.state.status === 'live';
+  const { result: corners, measuredFps } = useCornerDetection(videoRef, ready);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +73,40 @@ export default function ScanClient() {
       cancelled = true;
     };
   }, []);
+
+  // Draws the current detection result on a canvas overlaid on the video
+  // — a green dot per confirmed corner once all 4 are found, amber for
+  // whichever subset is found so far. Purely a visual aid for this task
+  // (proving the detection loop actually runs against live frames); the
+  // stability gate and auto-capture that act on this result are M1-004.
+  useEffect(() => {
+    const canvas = overlayRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (video.videoWidth > 0) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!corners) return;
+
+    const points: DetectedCorner[] = corners.complete
+      ? Object.values(corners.corners)
+      : Object.values(corners.found);
+    const color = corners.complete ? '#22c55e' : '#f59e0b';
+
+    for (const corner of points) {
+      ctx.beginPath();
+      ctx.arc(corner.center.x, corner.center.y, 14, 0, 2 * Math.PI);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }, [corners]);
 
   if (openCvPhase === 'error') {
     return (
@@ -101,8 +139,6 @@ export default function ScanClient() {
     );
   }
 
-  const ready = openCvPhase === 'ready' && camera.state.status === 'live';
-
   if (!ready) {
     return (
       <div
@@ -126,6 +162,19 @@ export default function ScanClient() {
           the stream to start without an explicit user gesture on the
           video element itself. */}
       <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+      {/* Sized to the video's intrinsic pixels (matched in the drawing
+          effect above) and scaled by the same object-cover CSS as the
+          video, so detected-corner coordinates line up without manual
+          scaling math. pointer-events-none so it never blocks taps. */}
+      <canvas
+        ref={overlayRef}
+        className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+      />
+      {measuredFps !== null && (
+        <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 font-mono text-xs text-white">
+          {measuredFps.toFixed(1)} fps
+        </div>
+      )}
     </div>
   );
 }
