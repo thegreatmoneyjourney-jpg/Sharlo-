@@ -79,7 +79,8 @@ export type StockTemplateQuestionCount = (typeof STOCK_TEMPLATE_QUESTION_COUNTS)
 
 export interface TemplateGeometry {
   schemaVersion: 1;
-  questionCount: StockTemplateQuestionCount;
+  /** `StockTemplateQuestionCount` (20/50/100) for a stock template, or any `computeCustomTemplateGeometry`-produced value for a custom one — widened to `number` here since a saved template's geometry doesn't otherwise carry which kind it came from. */
+  questionCount: number;
   pageWidthPt: number;
   pageHeightPt: number;
   bubbleRadiusPt: number;
@@ -141,14 +142,25 @@ function computeRollNumberColumns(
   return columns;
 }
 
+/**
+ * `layout`/`optionsPerQuestion` are passed in explicitly rather than
+ * looked up from `GRID_LAYOUT_BY_QUESTION_COUNT`/`ANSWER_OPTIONS_PER_QUESTION`
+ * internally, so this same function serves both
+ * `computeStockTemplateGeometry` (which passes the frozen stock table's
+ * exact values — zero behavior change) and `computeCustomTemplateGeometry`
+ * (which passes a dynamically-computed layout) without either path's
+ * geometry depending on the other's.
+ */
 function computeQuestions(
-  questionCount: StockTemplateQuestionCount,
+  questionCount: number,
+  layout: { columns: number; rows: number },
+  optionsPerQuestion: number,
   contentLeft: number,
   contentRight: number,
   answerGridTop: number,
   contentBottom: number,
 ): QuestionGeometry[] {
-  const { columns, rows } = GRID_LAYOUT_BY_QUESTION_COUNT[questionCount];
+  const { columns, rows } = layout;
   const contentWidth = contentRight - contentLeft;
   const columnWidth = contentWidth / columns;
   const gridHeight = contentBottom - answerGridTop;
@@ -163,11 +175,11 @@ function computeQuestions(
     const columnLeft = contentLeft + columnIndex * columnWidth;
     const bubblesLeft = columnLeft + QUESTION_LABEL_WIDTH;
     const bubblesWidth = columnWidth - QUESTION_LABEL_WIDTH;
-    const bubblePitch = bubblesWidth / ANSWER_OPTIONS_PER_QUESTION;
+    const bubblePitch = bubblesWidth / optionsPerQuestion;
     const rowY = answerGridTop + (rowIndex + 0.5) * rowPitch;
 
     const options: BubbleGeometry[] = [];
-    for (let optionIndex = 0; optionIndex < ANSWER_OPTIONS_PER_QUESTION; optionIndex++) {
+    for (let optionIndex = 0; optionIndex < optionsPerQuestion; optionIndex++) {
       options.push({
         optionIndex,
         center: { x: bubblesLeft + (optionIndex + 0.5) * bubblePitch, y: rowY },
@@ -199,6 +211,139 @@ export function computeStockTemplateGeometry(
     markers,
     questions: computeQuestions(
       questionCount,
+      GRID_LAYOUT_BY_QUESTION_COUNT[questionCount],
+      ANSWER_OPTIONS_PER_QUESTION,
+      contentLeft,
+      contentRight,
+      answerGridTop,
+      contentBottom,
+    ),
+    rollNumberColumns: computeRollNumberColumns(contentRight, contentTop),
+  };
+}
+
+// ---------------------------------------------------------------------
+// Custom templates (M2-003, FR-TPL-02) — arbitrary question/option
+// counts estimated from a teacher's uploaded sheet photo
+// (`detect-bubble-grid.ts`) and adjustable via the review UI, rather
+// than one of the 3 fixed stock presets above. Deliberately a separate
+// code path from `computeStockTemplateGeometry`, not a generalization
+// of it in place: the 3 stock templates are already generated,
+// committed (`public/templates/*.pdf`), and seeded into the database
+// (M2-002) — changing the function that produces their geometry, even
+// provably-equivalently, risks silently shifting already-shipped
+// geometry. `computeQuestions` above is shared (it was already pure
+// layout math with no stock-specific assumptions baked in beyond its
+// parameters), but the layout/count decisions for custom templates are
+// computed independently here.
+
+export const MIN_CUSTOM_QUESTION_COUNT = 1;
+export const MAX_CUSTOM_QUESTION_COUNT = 500;
+export const MIN_CUSTOM_OPTIONS_PER_QUESTION = 2;
+export const MAX_CUSTOM_OPTIONS_PER_QUESTION = 8;
+
+/**
+ * Thrown instead of silently generating a template whose bubbles would
+ * visually overlap — the same class of bug M2-001 found and fixed for
+ * the (fixed-layout) roll-number grid, where bubbles spaced at exactly
+ * 2x radius apart were mathematically "not overlapping" but touched
+ * with zero visible gap on paper. Custom templates can't rely on a
+ * fixed, pre-verified layout the way the 3 stock variants do — question
+ * count and options-per-question are both teacher-chosen — so this
+ * guard checks the *actual* resulting pitch at generation time instead.
+ */
+export class TemplateLayoutTooDenseError extends Error {
+  constructor(questionCount: number, optionsPerQuestion: number) {
+    super(
+      `${questionCount} questions x ${optionsPerQuestion} options doesn't fit legibly on one page — reduce the question count or options per question.`,
+    );
+    this.name = 'TemplateLayoutTooDenseError';
+  }
+}
+
+/** Same real-visible-gap margin M2-001 established for the roll-number grid (a bare 2x radius is mathematically non-overlapping but touches with zero gap on paper). */
+const MIN_BUBBLE_PITCH_RADIUS_FACTOR = 2.2;
+
+/**
+ * Row count stays capped at 25 the same way the stock table does (more
+ * questions grow the page sideways into more column-blocks, not
+ * downward past legible row spacing) — `geometry.test.ts` proves this
+ * reproduces `GRID_LAYOUT_BY_QUESTION_COUNT`'s exact values for 20/50/100,
+ * though the two are independently defined; see the section comment
+ * above for why they're not shared code.
+ */
+export function computeGridLayout(questionCount: number): { columns: number; rows: number } {
+  const rows = Math.min(questionCount, 25);
+  const columns = Math.ceil(questionCount / rows);
+  return { columns, rows };
+}
+
+/**
+ * Generates geometry for an arbitrary custom template — same page size,
+ * marker positions, and header/roll-number layout as every stock
+ * variant (so the generated PDF looks and scans identically), but sized
+ * to whatever question count and options-per-question the teacher
+ * confirmed in the review UI (`detect-bubble-grid.ts`'s estimate,
+ * possibly hand-adjusted) rather than one of the 3 fixed presets.
+ *
+ * Throws (never silently produces a visually-broken PDF) when the
+ * requested combination is too dense to lay out with a real visible gap
+ * between bubbles at the fixed `BUBBLE_RADIUS_PT` — the caller should
+ * catch this and ask the teacher to reduce rows/options, exactly the
+ * kind of thing the mandatory review step exists to catch before a
+ * template is ever saved.
+ */
+export function computeCustomTemplateGeometry(
+  questionCount: number,
+  optionsPerQuestion: number = ANSWER_OPTIONS_PER_QUESTION,
+): TemplateGeometry {
+  if (
+    !Number.isInteger(questionCount) ||
+    questionCount < MIN_CUSTOM_QUESTION_COUNT ||
+    questionCount > MAX_CUSTOM_QUESTION_COUNT
+  ) {
+    throw new Error(
+      `questionCount must be an integer between ${MIN_CUSTOM_QUESTION_COUNT} and ${MAX_CUSTOM_QUESTION_COUNT}, got ${questionCount}`,
+    );
+  }
+  if (
+    !Number.isInteger(optionsPerQuestion) ||
+    optionsPerQuestion < MIN_CUSTOM_OPTIONS_PER_QUESTION ||
+    optionsPerQuestion > MAX_CUSTOM_OPTIONS_PER_QUESTION
+  ) {
+    throw new Error(
+      `optionsPerQuestion must be an integer between ${MIN_CUSTOM_OPTIONS_PER_QUESTION} and ${MAX_CUSTOM_OPTIONS_PER_QUESTION}, got ${optionsPerQuestion}`,
+    );
+  }
+
+  const markers = computeMarkerCenters();
+  const contentLeft = markers.topLeft.x + MARKER_SIZE_PT / 2 + CONTENT_GAP;
+  const contentRight = markers.topRight.x - MARKER_SIZE_PT / 2 - CONTENT_GAP;
+  const contentTop = markers.topLeft.y + MARKER_SIZE_PT / 2 + CONTENT_GAP;
+  const contentBottom = markers.bottomLeft.y - MARKER_SIZE_PT / 2 - CONTENT_GAP;
+  const answerGridTop = contentTop + HEADER_HEIGHT + HEADER_TO_ANSWER_GRID_GAP;
+
+  const layout = computeGridLayout(questionCount);
+  const columnWidth = (contentRight - contentLeft) / layout.columns;
+  const bubblePitch = (columnWidth - QUESTION_LABEL_WIDTH) / optionsPerQuestion;
+  const rowPitch = (contentBottom - answerGridTop) / layout.rows;
+  const minPitch = MIN_BUBBLE_PITCH_RADIUS_FACTOR * BUBBLE_RADIUS_PT;
+  if (bubblePitch < minPitch || rowPitch < minPitch) {
+    throw new TemplateLayoutTooDenseError(questionCount, optionsPerQuestion);
+  }
+
+  return {
+    schemaVersion: 1,
+    questionCount,
+    pageWidthPt: PAGE_WIDTH_PT,
+    pageHeightPt: PAGE_HEIGHT_PT,
+    bubbleRadiusPt: BUBBLE_RADIUS_PT,
+    markerSizePt: MARKER_SIZE_PT,
+    markers,
+    questions: computeQuestions(
+      questionCount,
+      layout,
+      optionsPerQuestion,
       contentLeft,
       contentRight,
       answerGridTop,

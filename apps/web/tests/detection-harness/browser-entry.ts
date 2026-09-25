@@ -18,7 +18,7 @@
  * that reason.
  */
 
-import type { ArucoCv, CornerName } from '../../lib/scanning/corner-markers';
+import type { ArucoCv, CornerName, Point } from '../../lib/scanning/corner-markers';
 import { CornerMarkerDetector } from '../../lib/scanning/corner-markers';
 import type { PerspectiveCv } from '../../lib/scanning/perspective-transform';
 import { DEFAULT_PADDING_RATIO, dewarpFrame } from '../../lib/scanning/perspective-transform';
@@ -33,6 +33,13 @@ import { matchRollNumber, readRollNumber } from '../../lib/scanning/roll-number'
 import { arucoDataGridForCorner, fullMarkerGrid } from '../../lib/templates/aruco-marker-patterns';
 import type { StockTemplateQuestionCount } from '../../lib/templates/geometry';
 import { computeStockTemplateGeometry } from '../../lib/templates/geometry';
+import type { SheetBoundaryCv } from '../../lib/templates/detect-sheet-boundary';
+import { detectSheetBoundary } from '../../lib/templates/detect-sheet-boundary';
+import type {
+  DetectBubbleGridCv,
+  EstimatedBubbleGrid,
+} from '../../lib/templates/detect-bubble-grid';
+import { estimateBubbleGrid } from '../../lib/templates/detect-bubble-grid';
 import type { HarnessCv } from './fixtures';
 import {
   SAMPLE_RADIUS_PX,
@@ -42,6 +49,10 @@ import {
   sheetToMat,
   simulateTilt,
 } from './fixtures';
+import {
+  buildSyntheticBubbleGridPhoto,
+  buildSyntheticSheetPhoto,
+} from './template-creation-fixtures';
 
 let cvHandle: HarnessCv | undefined;
 
@@ -154,6 +165,24 @@ export interface StockTemplateMarkerCheckResult {
   maxPositionErrorPx: number;
 }
 
+export interface SheetBoundaryCaseSpec {
+  angleDeg?: number;
+  corners?: [Point, Point, Point, Point];
+  blank?: boolean;
+}
+
+export interface SheetBoundaryCaseResult {
+  detected: boolean;
+  /** Largest distance (px) between a detected corner and its ground-truth counterpart, after ordering both the same way (topLeft/topRight/bottomRight/bottomLeft) — `null` when nothing was detected at all. */
+  maxCornerErrorPx: number | null;
+  method: 'polygon' | 'bounding-rectangle' | null;
+}
+
+export interface BubbleGridCaseSpec {
+  rows: number;
+  columns: number;
+}
+
 export interface DetectionHarnessApi {
   cvReady: boolean;
   runCornerDetectionCase: (tiltDeg: number) => CornerDetectionCaseResult;
@@ -162,6 +191,8 @@ export interface DetectionHarnessApi {
   runStockTemplateMarkerCheck: (
     questionCount: StockTemplateQuestionCount,
   ) => StockTemplateMarkerCheckResult;
+  runSheetBoundaryCase: (spec: SheetBoundaryCaseSpec) => SheetBoundaryCaseResult;
+  runBubbleGridCase: (spec: BubbleGridCaseSpec) => EstimatedBubbleGrid;
 }
 
 declare global {
@@ -263,6 +294,41 @@ const api: DetectionHarnessApi = {
       maxPositionErrorPx = Math.max(maxPositionErrorPx, error);
     }
     return { complete: true, maxPositionErrorPx };
+  },
+
+  runSheetBoundaryCase(spec) {
+    const cv = requireCv();
+    const { canvas, groundTruthCorners } = buildSyntheticSheetPhoto(spec);
+    const mat = sheetToMat(cv, canvas);
+    const result = detectSheetBoundary(cv as unknown as SheetBoundaryCv, mat);
+    mat.delete();
+
+    if (!result) return { detected: false, maxCornerErrorPx: null, method: null };
+
+    const detected = [
+      result.corners.topLeft,
+      result.corners.topRight,
+      result.corners.bottomRight,
+      result.corners.bottomLeft,
+    ];
+    let maxCornerErrorPx = 0;
+    for (let i = 0; i < 4; i++) {
+      const error = Math.hypot(
+        detected[i].x - groundTruthCorners[i].x,
+        detected[i].y - groundTruthCorners[i].y,
+      );
+      maxCornerErrorPx = Math.max(maxCornerErrorPx, error);
+    }
+    return { detected: true, maxCornerErrorPx, method: result.method };
+  },
+
+  runBubbleGridCase(spec) {
+    const cv = requireCv();
+    const canvas = buildSyntheticBubbleGridPhoto(spec);
+    const mat = sheetToMat(cv, canvas);
+    const result = estimateBubbleGrid(cv as unknown as DetectBubbleGridCv, mat);
+    mat.delete();
+    return result;
   },
 };
 
