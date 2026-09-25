@@ -40,6 +40,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# generated build-time assets (see scripts/copy-opencv-asset.mjs) — not
-# source, regenerated from the pinned npm dependency on predev/prebuild
+# generated build-time assets (see scripts/copy-opencv-asset.mjs and
+# scripts/copy-pdfjs-assets.mjs) — not source, regenerated from the
+# pinned npm dependencies on predev/prebuild
 /public/vendor/
+
+# detection-harness build output (see scripts/build-detection-harness.mjs)
+# — not source, regenerated on pretest:e2e from pinned npm dependencies
+# and this repo's own lib/templates code
+/tests/detection-harness/.generated/

@@ -16,12 +16,26 @@ const port = Number(process.env.DETECTION_HARNESS_PORT ?? 4174);
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
 };
 
 const server = createServer(async (req, res) => {
   try {
     const urlPath = new URL(req.url ?? '/', 'http://localhost').pathname;
-    const relative = urlPath === '/' ? 'harness.html' : urlPath.replace(/^\/+/, '');
+    // lib/scanning/load-pdf-file.ts hardcodes its worker-shim/cmap/font
+    // asset URLs as site-root-absolute (/vendor/pdfjs/...,
+    // /pdf-worker-shim.mjs), matching the real app's public/ convention
+    // — build-detection-harness.mjs copies the same assets into
+    // .generated/ (kept with every other generated, not-committed build
+    // output, see .gitignore), so requests for them are rewritten here
+    // rather than changing those production paths just to suit this
+    // harness's own directory layout.
+    const relative =
+      urlPath === '/'
+        ? 'harness.html'
+        : urlPath.startsWith('/vendor/') || urlPath === '/pdf-worker-shim.mjs'
+          ? `.generated${urlPath}`
+          : urlPath.replace(/^\/+/, '');
     const filePath = path.join(rootDir, relative);
 
     if (!filePath.startsWith(rootDir)) {

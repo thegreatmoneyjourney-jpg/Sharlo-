@@ -27,6 +27,9 @@ const {
   useAutoCaptureMock,
   useManualCaptureMock,
   useSheetReaderMock,
+  loadImageFileMock,
+  detectAndReadSheetMock,
+  loadPdfDocumentMock,
 } = vi.hoisted(() => ({
   loadOpenCvMock: vi.fn(),
   useCameraStreamMock: vi.fn(),
@@ -34,6 +37,9 @@ const {
   useAutoCaptureMock: vi.fn(),
   useManualCaptureMock: vi.fn(),
   useSheetReaderMock: vi.fn(),
+  loadImageFileMock: vi.fn(),
+  detectAndReadSheetMock: vi.fn(),
+  loadPdfDocumentMock: vi.fn(),
 }));
 
 vi.mock('@/lib/scanning/opencv-loader', () => ({ loadOpenCv: loadOpenCvMock }));
@@ -42,6 +48,17 @@ vi.mock('../../scan/use-corner-detection', () => ({ useCornerDetection: useCorne
 vi.mock('../../scan/use-auto-capture', () => ({ useAutoCapture: useAutoCaptureMock }));
 vi.mock('../../scan/use-manual-capture', () => ({ useManualCapture: useManualCaptureMock }));
 vi.mock('./use-sheet-reader', () => ({ useSheetReader: useSheetReaderMock }));
+// The batch-import path (M2-009) doesn't go through `useSheetReader` at
+// all — it calls these directly (see exam-scan-flow.tsx) since a batch
+// item has no live per-frame detection loop to have already found its
+// corners. Mocked for the same reason as everything else here: real
+// image decoding/ArUco detection needs real browser/WASM execution,
+// proven separately by the Playwright detection harness, not this file.
+vi.mock('@/lib/scanning/load-image-file', () => ({ loadImageFile: loadImageFileMock }));
+vi.mock('@/lib/scanning/read-sheet-from-image', () => ({
+  detectAndReadSheet: detectAndReadSheetMock,
+}));
+vi.mock('@/lib/scanning/load-pdf-file', () => ({ loadPdfDocument: loadPdfDocumentMock }));
 
 const OPENCV_READY = Promise.resolve({ cv: { getBuildInformation: () => 'x' } });
 const GEOMETRY = computeStockTemplateGeometry(20);
@@ -77,6 +94,10 @@ function allAnswered(count: number, optionIndex = 0): SheetReadOutcome {
   );
 }
 
+function fakeImageFile(name: string): File {
+  return new File([], name, { type: 'image/jpeg' });
+}
+
 beforeEach(() => {
   mockCamera({ status: 'live' });
   loadOpenCvMock.mockReturnValue(OPENCV_READY);
@@ -93,6 +114,12 @@ beforeEach(() => {
     capture: vi.fn(),
   });
   useSheetReaderMock.mockReturnValue(null);
+  loadImageFileMock.mockResolvedValue({
+    imageUrl: 'data:image/jpeg;base64,FAKE',
+    width: 2,
+    height: 2,
+    imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+  });
 });
 
 afterEach(() => {
@@ -103,6 +130,9 @@ afterEach(() => {
   useAutoCaptureMock.mockReset();
   useManualCaptureMock.mockReset();
   useSheetReaderMock.mockReset();
+  loadImageFileMock.mockReset();
+  detectAndReadSheetMock.mockReset();
+  loadPdfDocumentMock.mockReset();
 });
 
 describe('ExamScanFlow', () => {
@@ -623,5 +653,247 @@ describe('ExamScanFlow', () => {
     for (const phrase of ['100% accura', 'fully automatic', 'guaranteed accura']) {
       expect(text).not.toContain(phrase);
     }
+  });
+
+  async function captureKey() {
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+    const result = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+    return result;
+  }
+
+  describe('batch import (M2-009)', () => {
+    it('shows live progress while running, disables Import files, and reports a summary when done', async () => {
+      await captureKey();
+
+      let resolveFirstLoad!: (value: {
+        imageUrl: string;
+        width: number;
+        height: number;
+        imageData: unknown;
+      }) => void;
+      loadImageFileMock.mockReset();
+      loadImageFileMock
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirstLoad = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({
+          imageUrl: 'data:image/jpeg;base64,FAKE',
+          width: 2,
+          height: 2,
+          imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+        });
+      detectAndReadSheetMock
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 5 },
+          ]),
+        })
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 6 },
+          ]),
+        });
+
+      const files = [fakeImageFile('first.jpg'), fakeImageFile('second.jpg')];
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), { target: { files } });
+
+      expect(await screen.findByText(/processing sheet 1 of 2/i)).toBeInTheDocument();
+      expect(screen.getByText(/first\.jpg/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /import files/i })).toBeDisabled();
+
+      await act(async () => {
+        resolveFirstLoad({
+          imageUrl: 'data:image/jpeg;base64,FAKE',
+          width: 2,
+          height: 2,
+          imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+        });
+      });
+
+      expect(await screen.findByText(/imported 2 sheets/i)).toBeInTheDocument();
+      expect(loadImageFileMock).toHaveBeenCalledTimes(2);
+      expect(detectAndReadSheetMock).toHaveBeenCalledTimes(2);
+
+      fireEvent.click(screen.getByRole('button', { name: /^done$/i }));
+      expect(await screen.findByRole('button', { name: /fully graded/i })).toBeInTheDocument();
+      expect(screen.getByText(/roll #6/i)).toBeInTheDocument();
+    });
+
+    it('reports an unreadable sheet as a failure without stopping the rest of the batch', async () => {
+      await captureKey();
+
+      detectAndReadSheetMock
+        .mockReturnValueOnce({ status: 'no-markers-detected' })
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 3 },
+          ]),
+        });
+
+      const files = [fakeImageFile('blurry.jpg'), fakeImageFile('good.jpg')];
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), { target: { files } });
+
+      expect(await screen.findByText(/imported 1 sheet\b/i)).toBeInTheDocument();
+      expect(screen.getByText(/blurry\.jpg/i)).toBeInTheDocument();
+      expect(screen.getByText(/couldn.t find the sheet.s corner markers/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /^done$/i }));
+      expect(screen.getByText(/roll #3/i)).toBeInTheDocument();
+    });
+
+    it('pauses on a duplicate roll number mid-batch and resumes once the teacher confirms the rescan', async () => {
+      const { rerender } = await captureKey();
+
+      useManualCaptureMock.mockReturnValue({
+        capturedFrame: fakeFrame(2000),
+        canCapture: true,
+        capture: vi.fn(),
+      });
+      useSheetReaderMock.mockReturnValue(
+        readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 9 }]),
+      );
+      rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+      await screen.findByText(/roll #9/i);
+
+      detectAndReadSheetMock
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 1).result.questions, [
+            { outcome: 'answered', optionIndex: 9 },
+          ]),
+        })
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 3 },
+          ]),
+        });
+
+      const files = [fakeImageFile('dup.jpg'), fakeImageFile('ok.jpg')];
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), { target: { files } });
+
+      const dialog = await screen.findByRole('alertdialog', {
+        name: /duplicate roll number detected/i,
+      });
+      expect(dialog).toHaveTextContent(/roll #9/i);
+      expect(detectAndReadSheetMock).toHaveBeenCalledTimes(1); // the second item hasn't started yet
+
+      fireEvent.click(screen.getByRole('button', { name: /rescan intentionally/i }));
+
+      expect(await screen.findByText(/imported 2 sheets/i)).toBeInTheDocument();
+      expect(detectAndReadSheetMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('expands a multi-page PDF into one batch item per page, processed in order', async () => {
+      await captureKey();
+
+      const loadPageMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          pageNumber: 1,
+          imageUrl: 'data:image/jpeg;base64,FAKE',
+          width: 2,
+          height: 2,
+          imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+        })
+        .mockResolvedValueOnce({
+          pageNumber: 2,
+          imageUrl: 'data:image/jpeg;base64,FAKE',
+          width: 2,
+          height: 2,
+          imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16) },
+        });
+      loadPdfDocumentMock.mockResolvedValue({ numPages: 2, loadPage: loadPageMock });
+      detectAndReadSheetMock
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 1 },
+          ]),
+        })
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 2 },
+          ]),
+        });
+
+      const pdfFile = new File([], 'scan.pdf', { type: 'application/pdf' });
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), {
+        target: { files: [pdfFile] },
+      });
+
+      expect(await screen.findByText(/imported 2 sheets/i)).toBeInTheDocument();
+      expect(loadPageMock).toHaveBeenCalledTimes(2);
+      expect(loadPageMock).toHaveBeenNthCalledWith(1, 1);
+      expect(loadPageMock).toHaveBeenNthCalledWith(2, 2);
+    });
+
+    it('rejects an unsupported file up front as a failure, without touching the loaders', async () => {
+      await captureKey();
+
+      const files = [new File([], 'notes.txt', { type: 'text/plain' }), fakeImageFile('good.jpg')];
+      detectAndReadSheetMock.mockReturnValueOnce({
+        status: 'read',
+        outcome: readOutcome(allAnswered(20, 0).result.questions, [
+          { outcome: 'answered', optionIndex: 4 },
+        ]),
+      });
+
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), { target: { files } });
+
+      expect(await screen.findByText(/imported 1 sheet\b/i)).toBeInTheDocument();
+      expect(screen.getByText(/notes\.txt/i)).toBeInTheDocument();
+      // Only the recognized image file reaches the loader — the
+      // unsupported one was rejected up front by `classifyFile`. Checked
+      // by name rather than `toHaveBeenCalledWith(files[0])`: jsdom's
+      // `File` doesn't expose `name`/`type` as enumerable own properties,
+      // so deep-equality-based matchers can't reliably tell two
+      // differently-named `File`s apart.
+      expect(loadImageFileMock).toHaveBeenCalledTimes(1);
+      expect(loadImageFileMock.mock.calls[0]![0].name).toBe('good.jpg');
+    });
+
+    it("a batch's own first sheet can serve as the answer key, same as a live-captured one would", async () => {
+      // No captureKey() here -- the batch itself supplies the key, from
+      // the component's very first render, proving the loop drives
+      // applyReadResult's capture-key branch too, not just scan-students.
+      render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+      await screen.findByText(/scan the answer key sheet first/i);
+
+      detectAndReadSheetMock
+        .mockReturnValueOnce({ status: 'read', outcome: allAnswered(20, 0) }) // accepted as the key
+        .mockReturnValueOnce({
+          status: 'read',
+          outcome: readOutcome(allAnswered(20, 0).result.questions, [
+            { outcome: 'answered', optionIndex: 8 },
+          ]),
+        });
+
+      const files = [fakeImageFile('key.jpg'), fakeImageFile('student1.jpg')];
+      fireEvent.change(screen.getByLabelText(/choose files to import/i), { target: { files } });
+
+      expect(await screen.findByText(/imported 2 sheets/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /^done$/i }));
+
+      expect(await screen.findByText(/key captured/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /fully graded/i })).toBeInTheDocument();
+      expect(screen.getByText(/roll #8/i)).toBeInTheDocument();
+      expect(screen.getByText('20 / 20')).toBeInTheDocument();
+    });
   });
 });
