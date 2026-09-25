@@ -387,6 +387,49 @@ test.describe('full stock-sheet read (M2-004, FR-EXAM-03): map-geometry-to-frame
   });
 });
 
+test.describe('continuous scan-loop reliability (M2-005, Kickoff §1 core promise)', () => {
+  test('reads 30 distinct sheets correctly in one session, back-to-back, with zero errors or drift across the run', async ({
+    page,
+  }) => {
+    // Automates the part of M2-005's own "scan a full class of 30+
+    // sheets back-to-back" done-when criterion a Claude Code session
+    // actually can prove: that the real detect->dewarp->map->read
+    // pipeline (the same code exam-scan-flow.tsx's zero-click loop
+    // drives on every auto-capture) holds up over many consecutive,
+    // distinct sheets within one cv/page session — no accumulating
+    // state corruption, no growing-worse drift, no exception partway
+    // through. It does not and cannot exercise the literal physical
+    // camera/hand-holding portion — see docs/reports/SHARLO-M2-005.md's
+    // Flags for why that's the same category of constraint M1-011
+    // already established for real-device validation.
+    await gotoHarness(page);
+
+    const sheetCount = 30;
+    const questionCount = 20 as const;
+    const results = await page.evaluate(
+      (spec) => window.DetectionHarness.runContinuousScanStressCase(spec),
+      { questionCount, sheetCount },
+    );
+
+    expect(results).toHaveLength(sheetCount);
+    for (let i = 0; i < sheetCount; i++) {
+      const expectedQuestions = Array.from({ length: questionCount }, (_, q) => ({
+        outcome: 'answered' as const,
+        optionIndex: (q + i) % 4,
+      }));
+      const expectedRollDigits = Array.from({ length: 6 }, (_, d) => ({
+        outcome: 'answered' as const,
+        optionIndex: (d + i) % 10,
+      }));
+
+      expect(results[i], `sheet ${i} of ${sheetCount}`).toBeDefined();
+      expect(results[i]!.cornerDetectionComplete, `sheet ${i} corner detection`).toBe(true);
+      expect(results[i]!.questions, `sheet ${i} questions`).toEqual(expectedQuestions);
+      expect(results[i]!.rollNumberColumns, `sheet ${i} roll number`).toEqual(expectedRollDigits);
+    }
+  });
+});
+
 test.describe('stock template corner markers are actually detectable (M2-001, FR-TPL-01)', () => {
   test('all 4 corner markers on every stock question-count variant detect at their exact geometry.ts positions', async ({
     page,
