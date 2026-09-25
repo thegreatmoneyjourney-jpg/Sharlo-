@@ -453,3 +453,55 @@ test.describe('stock template corner markers are actually detectable (M2-001, FR
     }
   });
 });
+
+test.describe('Review Queue crop generation (M2-006, FR-REVIEW-01, FR-DETECT-04)', () => {
+  // jsdom (the component tests' environment) has no real Canvas 2D
+  // implementation, so use-sheet-reader.ts's actual drawImage+toDataURL
+  // crop extraction (cropRegionToDataUrl here, the identical technique)
+  // is entirely untestable there — this is the one place that real code
+  // path runs against real dewarped pixels in a real browser.
+  // `buildReviewItemSpecs`'s own decision logic (which questions/roll
+  // number need review) is already unit-tested directly
+  // (review-queue.test.ts); what only a real browser can prove is that
+  // extracting real pixels for a real crop rect actually produces a
+  // real, valid image — proven once here (the 'roll-number' kind) since
+  // the extraction call itself doesn't vary by kind, only the rect does.
+
+  test('a cleanly-read sheet produces zero review-queue crops', async ({ page }) => {
+    await gotoHarness(page);
+
+    const questionAnswers: (number | null)[] = new Array(20).fill(0);
+    const rollNumberDigits: (number | null)[] = [4, 0, 7, 1, 2, 3];
+
+    const result = await page.evaluate((spec) => window.DetectionHarness.runReviewCropCase(spec), {
+      questionCount: 20 as const,
+      answers: { questionAnswers, rollNumberDigits },
+    });
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.crops).toEqual([]);
+  });
+
+  test('an unreadable roll number produces a real, valid, correctly-sized crop image', async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+
+    const questionAnswers: (number | null)[] = new Array(20).fill(0);
+    const rollNumberDigits: (number | null)[] = [4, 0, null, 1, 2, 3]; // column index 2 left blank -> unreadable
+
+    const result = await page.evaluate((spec) => window.DetectionHarness.runReviewCropCase(spec), {
+      questionCount: 20 as const,
+      answers: { questionAnswers, rollNumberDigits },
+    });
+
+    expect(result.cornerDetectionComplete).toBe(true);
+    expect(result.crops).toHaveLength(1);
+    const crop = result.crops[0]!;
+    expect(crop.kind).toBe('roll-number');
+    expect(crop.isValidPngDataUrl).toBe(true);
+    // A real, non-degenerate crop — not a 0x0 or 1x1 sliver.
+    expect(crop.width).toBeGreaterThan(10);
+    expect(crop.height).toBeGreaterThan(10);
+  });
+});

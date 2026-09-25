@@ -22,7 +22,10 @@
 import type { QuestionResult } from './bubble-fill';
 
 export type QuestionScore =
-  { outcome: 'correct' } | { outcome: 'incorrect' } | { outcome: 'needs-review' };
+  | { outcome: 'correct' }
+  | { outcome: 'incorrect' }
+  | { outcome: 'needs-review' }
+  | { outcome: 'excluded' };
 
 export function scoreQuestion(
   studentResult: QuestionResult,
@@ -42,6 +45,17 @@ export interface ScoredSheet {
   correctCount: number;
   incorrectCount: number;
   needsReviewCount: number;
+  /** Manually excluded via review-queue resolution (M2-006) — never produced by scoreQuestion itself, only by applyReviewResolution. Not counted toward either correctCount or incorrectCount, and callers displaying a "X / Y" tally should subtract this from Y — an excluded question was never a fair test of that student. */
+  excludedCount: number;
+}
+
+function tally(scores: readonly QuestionScore[]): Omit<ScoredSheet, 'scores'> {
+  return {
+    correctCount: scores.filter((s) => s.outcome === 'correct').length,
+    incorrectCount: scores.filter((s) => s.outcome === 'incorrect').length,
+    needsReviewCount: scores.filter((s) => s.outcome === 'needs-review').length,
+    excludedCount: scores.filter((s) => s.outcome === 'excluded').length,
+  };
 }
 
 /** Throws on a length mismatch rather than silently scoring against the wrong question — student/key results must come from the same template's geometry. */
@@ -56,10 +70,35 @@ export function scoreSheet(
   }
 
   const scores = studentResults.map((student, i) => scoreQuestion(student, keyResults[i]!));
-  return {
-    scores,
-    correctCount: scores.filter((s) => s.outcome === 'correct').length,
-    incorrectCount: scores.filter((s) => s.outcome === 'incorrect').length,
-    needsReviewCount: scores.filter((s) => s.outcome === 'needs-review').length,
-  };
+  return { scores, ...tally(scores) };
+}
+
+/** Recomputes a ScoredSheet's aggregate counts from a (possibly manually-edited) scores array — same tally scoreSheet itself uses, so a caller that mutates one entry via applyReviewResolution never hand-rolls its own counting logic. */
+export function rescoreSheet(scores: readonly QuestionScore[]): ScoredSheet {
+  return { scores: [...scores], ...tally(scores) };
+}
+
+export type QuestionResolution =
+  { action: 'pick'; optionIndex: number } | { action: 'mark-blank' } | { action: 'exclude' };
+
+/**
+ * Applies a teacher's manual review-queue decision (FR-REVIEW-02: "picking
+ * the correct answer... or marking 'left blank' / 'invalid, exclude from
+ * scoring'") to a single flagged question. `keyResult` must be the same
+ * `answered` key entry `scoreQuestion` was already given for this question
+ * — M2-004's key-capture flow refuses to accept a key with any unresolved
+ * question, so the defensive `needs-review` fallback below should be
+ * unreachable in practice, the same guarantee `scoreQuestion` itself
+ * documents.
+ */
+export function applyReviewResolution(
+  resolution: QuestionResolution,
+  keyResult: QuestionResult,
+): QuestionScore {
+  if (resolution.action === 'exclude') return { outcome: 'excluded' };
+  if (keyResult.outcome !== 'answered') return { outcome: 'needs-review' };
+  if (resolution.action === 'mark-blank') return { outcome: 'incorrect' };
+  return resolution.optionIndex === keyResult.optionIndex
+    ? { outcome: 'correct' }
+    : { outcome: 'incorrect' };
 }
