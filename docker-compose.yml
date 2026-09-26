@@ -44,6 +44,12 @@ services:
       # in that table, encrypted with this key; this is the one credential
       # allowed to be an env var, since it protects the rest, not one of them.
       INTEGRATION_CREDENTIALS_KEY: ${INTEGRATION_CREDENTIALS_KEY:?set in .env}
+      # M3-001/M3-002 — derived from the same APP_DOMAIN/API_DOMAIN Caddy
+      # already needs (below), always HTTPS here since Caddy terminates
+      # TLS in front of this container; no separate .env entries needed.
+      API_BASE_URL: https://${API_DOMAIN:?set in .env}
+      APP_BASE_URL: https://${APP_DOMAIN:?set in .env}
+      COOKIE_SIGNING_SECRET: ${COOKIE_SIGNING_SECRET:?set in .env}
     expose:
       - '4000'
 

@@ -14,17 +14,74 @@ export function createAppDb(connectionString: string): PostgresJsDatabase<typeof
 }
 
 /**
- * Sets the session's tenant claim for the lifetime of one transaction, then
- * runs `fn` inside it. `SET LOCAL` (not `SET`) so the claim can never leak
- * across pooled-connection reuse into an unrelated request.
+ * Sets one session-local GUC (`SET LOCAL` via `set_config(..., true)`, so it
+ * can never leak across pooled-connection reuse into an unrelated request)
+ * for the lifetime of one transaction, then runs `fn` inside it. The GUC
+ * name is passed as a bound parameter to `set_config` itself, not spliced
+ * into SQL text — safe because `set_config` takes it as an ordinary text
+ * argument, unlike a literal `SET LOCAL <name> = ...` statement would.
+ *
+ * Shared by every "prove who you are via X, then act" pattern this app
+ * needs (tenant identity via a validated session, a session via its raw
+ * cookie token, a user account via its Google subject id before any
+ * session/tenant context exists yet) — see the three named wrappers below
+ * for what each one is actually for and why each is a real, separate need,
+ * not three copies of the same thing.
  */
+async function withGucContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  gucName: string,
+  gucValue: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config(${gucName}, ${gucValue}, true)`);
+    return fn(tx as unknown as PostgresJsDatabase<typeof schema>);
+  });
+}
+
+/** Every ordinary tenant-scoped query, once a session has already established `userId`. */
 export async function withTenantContext<T>(
   db: PostgresJsDatabase<typeof schema>,
   userId: string,
   fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config('app.current_user_id', ${userId}, true)`);
-    return fn(tx as unknown as PostgresJsDatabase<typeof schema>);
-  });
+  return withGucContext(db, 'app.current_user_id', userId, fn);
+}
+
+/**
+ * `sessions`' own RLS policy (schema.ts's doc comment on that table) can't
+ * use `app.current_user_id` for its main lookup — that claim is only known
+ * *after* a session is validated, and validating the session is what this
+ * lookup is for. Scoped instead against `app.session_lookup_token`, set to
+ * the raw cookie token being looked up right before the query.
+ */
+export async function withSessionLookupContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  token: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return withGucContext(db, 'app.session_lookup_token', token, fn);
+}
+
+/**
+ * The exact same chicken-and-egg problem as `sessions`' lookup, one layer
+ * earlier: signing in checks "does an account for this Google subject id
+ * already exist" *before* any user id — and therefore any tenant context —
+ * exists to check it with (`M3-001`/`M3-002`'s report has the full story of
+ * how this was found: it wasn't exercised by `M0-006`'s original RLS proof,
+ * which only ever read *already-seeded* fixture rows over the privileged
+ * connection, never inserted a brand-new user over the restricted one).
+ * Scoped against `app.google_sub_lookup`, alongside `users`' existing
+ * self-access policy — both are permissive SELECT policies, so a row is
+ * visible if *either* matches (Postgres ORs permissive policies together),
+ * which is exactly "your own row once you know your id, or a row matching
+ * the Google subject you're currently signing in with."
+ */
+export async function withGoogleSubLookupContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  googleSub: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return withGucContext(db, 'app.google_sub_lookup', googleSub, fn);
 }

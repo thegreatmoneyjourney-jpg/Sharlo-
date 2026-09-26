@@ -63,4 +63,8 @@ export async function grantAppRolePrivileges(sql: Sql): Promise<void> {
   // narrower grant than the other tables', matching that actual access
   // pattern rather than granting privilege "just in case."
   await sql`GRANT SELECT, INSERT, UPDATE ON integration_credentials TO app_user`;
+  // No UPDATE: a session is either looked up, created, or deleted
+  // (logout/expiry) — nothing in this app ever mutates an existing
+  // session row in place.
+  await sql`GRANT SELECT, INSERT, DELETE ON sessions TO app_user`;
 }
