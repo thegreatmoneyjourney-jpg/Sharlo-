@@ -1,0 +1,1 @@
+CREATE POLICY "users_select_by_google_sub_lookup" ON "users" AS PERMISSIVE FOR SELECT TO "app_user" USING ("users"."google_sub" = nullif(current_setting('app.google_sub_lookup', true), ''));

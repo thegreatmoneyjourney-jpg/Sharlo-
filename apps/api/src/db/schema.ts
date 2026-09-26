@@ -66,6 +66,21 @@ export const users = pgTable(
     recoveryKeyReminderDismissedAt: timestamp('recovery_key_reminder_dismissed_at', {
       withTimezone: true,
     }),
+    // M3-001 — encrypted at rest with the same AES-256-GCM primitive as
+    // `integration_credentials` (`../integrations/credential-store.ts`'s
+    // functions, reused directly rather than a second key-management
+    // scheme for what's the same underlying requirement: a secret the
+    // server must read in plaintext to do its job). NOT stored in that
+    // table itself — this is a *per-user* Google OAuth credential, not
+    // platform-level integration config, so it gets its own nullable
+    // column here instead (null for `local_only` accounts, which have no
+    // Google tokens at all). Requested with `access_type=offline` +
+    // `prompt=consent` at sign-in specifically so a refresh token exists
+    // to store — Google only issues one on that combination, and
+    // discarding it here would force a full re-consent flow later just to
+    // add the M3-006 Drive-access-token-refresh endpoint this is meant to
+    // eventually feed (that endpoint is M3-006's own scope, not built yet).
+    googleRefreshTokenEncrypted: bytea('google_refresh_token_encrypted'),
     schemaVersion: integer('schema_version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -89,6 +104,22 @@ export const users = pgTable(
       for: 'all',
       to: 'app_user',
       using: sql`${table.id} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    // M3-001/M3-002: signing in has to check "does an account for this
+    // Google subject id already exist" *before* any user id — and
+    // therefore any tenant context — exists to check it with. A second,
+    // separate permissive SELECT policy (Postgres ORs permissive policies
+    // together, so this adds a row's visibility, never subtracts from the
+    // policy above) scoped against its own GUC
+    // (`../db/client.ts`'s `withGoogleSubLookupContext`), the exact same
+    // shape as `sessions`' own lookup-before-identity problem. Never
+    // matches a `google_sub IS NULL` row (a local-only account) — nullif
+    // normalizes an unset GUC to NULL, and `NULL = NULL` is never true in
+    // SQL, so this can't be tricked into returning every passwordless row.
+    pgPolicy('users_select_by_google_sub_lookup', {
+      for: 'select',
+      to: 'app_user',
+      using: sql`${table.googleSub} = nullif(current_setting('app.google_sub_lookup', true), '')`,
     }),
   ],
 ).enableRLS();
@@ -202,3 +233,60 @@ export const integrationCredentials = pgTable(
     uniqueIndex('integration_credentials_provider_key_unique').on(table.provider, table.keyName),
   ],
 );
+
+/**
+ * M3-001/M3-002 (`ARCHITECTURE.md` §9) — one row per signed-in session.
+ * `token` is the high-entropy random value inside the httpOnly session
+ * cookie (never a UUID — 122 bits, structured, and guessable-in-principle
+ * in a way a 256-bit random token isn't); `csrfToken` backs the
+ * double-submit CSRF check on state-changing requests, generated once per
+ * session rather than per-request.
+ *
+ * RLS here needs a genuinely different policy shape from every other
+ * table, because of a chicken-and-egg problem the others don't have:
+ * every other table's policy trusts `app.current_user_id`, a claim set
+ * *after* a session is already validated — but validating the session is
+ * exactly the operation that hasn't happened yet when this table's main
+ * lookup (raw cookie token → which user is this?) runs. Comparing against
+ * `current_user_id` here would be circular.
+ *
+ * Instead, SELECT is scoped against a *different* GUC, `app.session_lookup_token`
+ * (see `../auth/session.ts`), set to the raw token being looked up right
+ * before the query — so even a future bug that dropped the query's own
+ * `WHERE token = ...` clause could still only ever see the one row matching
+ * that exact token, never the whole table. This is the same "fail closed
+ * even if the app-layer query is wrong" property RLS gives every other
+ * table, extended to a table whose access pattern is structurally
+ * different. INSERT (issuing a new session, right after OAuth identifies
+ * the user) and DELETE (logout) *do* have a `current_user_id` available by
+ * then, so they use the normal predicate.
+ */
+export const sessions = pgTable(
+  'sessions',
+  {
+    token: text('token').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    csrfToken: text('csrf_token').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    pgPolicy('sessions_select_by_lookup_token', {
+      for: 'select',
+      to: 'app_user',
+      using: sql`${table.token} = nullif(current_setting('app.session_lookup_token', true), '')`,
+    }),
+    pgPolicy('sessions_insert_own_only', {
+      for: 'insert',
+      to: 'app_user',
+      withCheck: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    pgPolicy('sessions_delete_own_only', {
+      for: 'delete',
+      to: 'app_user',
+      using: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+  ],
+).enableRLS();
