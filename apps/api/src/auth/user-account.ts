@@ -57,6 +57,7 @@ export async function findOrCreateUserByGoogleIdentity(
       email: identity.email,
       googleSub: identity.googleSub,
       authMode: 'google',
+      authProvider: 'google',
       googleRefreshTokenEncrypted: refreshToken ? encryptCredentialValue(refreshToken) : null,
     }),
   );

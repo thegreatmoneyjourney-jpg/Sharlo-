@@ -39,8 +39,8 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
       await runMigrations(DATABASE_URL!, APP_DB_ROLE_PASSWORD);
       const ownerDb = drizzle(ownerClient, { schema: { users } });
       await ownerDb.insert(users).values([
-        { id: tenantA.id, email: tenantA.email, authMode: 'google' },
-        { id: tenantB.id, email: tenantB.email, authMode: 'google' },
+        { id: tenantA.id, email: tenantA.email, authMode: 'google', authProvider: 'google' },
+        { id: tenantB.id, email: tenantB.email, authMode: 'google', authProvider: 'google' },
       ]);
     });
 

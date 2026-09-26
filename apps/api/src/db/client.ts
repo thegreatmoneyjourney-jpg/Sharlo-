@@ -116,3 +116,35 @@ export async function withGoogleSubLookupContext<T>(
 ): Promise<T> {
   return withGucContext(db, { 'app.google_sub_lookup': googleSub }, fn);
 }
+
+/**
+ * `M3-005`/`ADR-0018` — the same lookup-before-identity shape as
+ * `withGoogleSubLookupContext` above, for the email-OTP sign-in path:
+ * verifying a code has to check "does an account for this email already
+ * exist" before any user id exists to scope the query with. Scoped
+ * against `app.email_lookup`, alongside `users`' own self-access and
+ * google_sub-lookup policies (all permissive SELECT policies, ORed).
+ */
+export async function withEmailLookupContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  email: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return withGucContext(db, { 'app.email_lookup': email }, fn);
+}
+
+/**
+ * `M3-005`/`ADR-0018` — `email_otp_codes`' own lookup GUC, used for every
+ * operation on that table (request writes a new row, verify reads and
+ * updates the matching one) — see that table's own doc comment in
+ * `schema.ts` for why this isn't a meaningful access-control boundary by
+ * itself (the real protection is the code + expiry + attempts + rate
+ * limiting), only defense against a buggy/missing `WHERE` clause.
+ */
+export async function withOtpEmailLookupContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  email: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return withGucContext(db, { 'app.otp_email_lookup': email }, fn);
+}

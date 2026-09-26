@@ -43,6 +43,15 @@ export const users = pgTable(
     email: text('email').notNull().unique(),
     googleSub: text('google_sub').unique(),
     authMode: text('auth_mode', { enum: ['google', 'local_only'] }).notNull(),
+    // M3-005/ADR-0018 — HOW this account authenticates, independent of
+    // auth_mode (WHERE its student data lives). Today the two are 1:1
+    // ('google'<->'google', 'local_only'<->'email_otp') but are kept as
+    // separate columns on purpose: a possible future "local-only account
+    // links Google Drive" flow should be able to change one without
+    // touching the other, rather than needing a schema change to
+    // introduce that distinction later. See ADR-0018's "Future: account
+    // linking" section — not built yet, just not ruled out.
+    authProvider: text('auth_provider', { enum: ['google', 'email_otp'] }).notNull(),
     accountType: text('account_type', {
       enum: ['teacher', 'school_admin', 'platform_admin'],
     })
@@ -120,6 +129,19 @@ export const users = pgTable(
       for: 'select',
       to: 'app_user',
       using: sql`${table.googleSub} = nullif(current_setting('app.google_sub_lookup', true), '')`,
+    }),
+    // M3-005/ADR-0018 — the exact same chicken-and-egg problem as the
+    // google_sub lookup above, one layer earlier for the email-OTP path:
+    // verifying a code needs to check "does an account for this email
+    // already exist" before any user id (and therefore any tenant
+    // context) exists to scope the query with. A third permissive SELECT
+    // policy (still ORed with the other two, per Postgres's own semantics
+    // for multiple permissive policies), scoped against its own GUC
+    // (`app.email_lookup`, `../db/client.ts`'s `withEmailLookupContext`).
+    pgPolicy('users_select_by_email_lookup', {
+      for: 'select',
+      to: 'app_user',
+      using: sql`${table.email} = nullif(current_setting('app.email_lookup', true), '')`,
     }),
   ],
 ).enableRLS();
@@ -287,6 +309,50 @@ export const sessions = pgTable(
       for: 'delete',
       to: 'app_user',
       using: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+  ],
+).enableRLS();
+
+/**
+ * `M3-005`/`ADR-0018` — one row per requested email-OTP sign-in code.
+ * `codeHash` is a hash, never the raw code — real defense-in-depth here
+ * (the actual protection against brute-force is `attempts` + `expiresAt` +
+ * the request/verify endpoints' own rate limiting, not this hash's
+ * strength against a 6-digit space, which is small by design; see the ADR).
+ * No `user_id` column: a code can be requested for an email that doesn't
+ * have a `users` row yet (a brand-new local-only signup) — the row this
+ * table's about is purely "an email proved control of its inbox," which
+ * `../auth/email-otp.ts` turns into a `users` row (new or existing) only
+ * *after* successful verification, never before.
+ *
+ * RLS here is the same "chicken-and-egg, scope by a purpose-specific GUC"
+ * shape as `users`' own email/google_sub lookup policies and `sessions`'
+ * token lookup — `app.otp_email_lookup`, set to the target email right
+ * before the query, for every operation this table needs (request writes
+ * a new row, verify reads+updates the matching one). This is *not* a
+ * meaningful access-control boundary by itself (anyone can set this GUC to
+ * any email — there's no proof-of-identity at this layer), the same as
+ * `google_sub_lookup`/`email_lookup` aren't: it's defense against a buggy
+ * or missing `WHERE` clause ever returning more than one email's own rows,
+ * not the actual security boundary (that's the code + expiry + attempts).
+ */
+export const emailOtpCodes = pgTable(
+  'email_otp_codes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: text('email').notNull(),
+    codeHash: text('code_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    pgPolicy('email_otp_codes_by_email_lookup', {
+      for: 'all',
+      to: 'app_user',
+      using: sql`${table.email} = nullif(current_setting('app.otp_email_lookup', true), '')`,
+      withCheck: sql`${table.email} = nullif(current_setting('app.otp_email_lookup', true), '')`,
     }),
   ],
 ).enableRLS();

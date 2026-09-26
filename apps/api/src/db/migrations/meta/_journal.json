@@ -43,6 +43,13 @@
       "when": 1790406569250,
       "tag": "0005_gray_xavin",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790432991499,
+      "tag": "0006_old_champions",
+      "breakpoints": true
     }
   ]
 }

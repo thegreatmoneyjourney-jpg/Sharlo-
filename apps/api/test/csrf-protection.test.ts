@@ -29,9 +29,12 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('CSRF double-submit protecti
     process.env.INTEGRATION_CREDENTIALS_KEY = randomBytes(32).toString('base64');
     await runMigrations(DATABASE_URL!, APP_DB_ROLE_PASSWORD);
     const ownerDb = drizzle(ownerClient, { schema: { users } });
-    await ownerDb
-      .insert(users)
-      .values({ id: testUser.id, email: testUser.email, authMode: 'google' });
+    await ownerDb.insert(users).values({
+      id: testUser.id,
+      email: testUser.email,
+      authMode: 'google',
+      authProvider: 'google',
+    });
   });
 
   afterAll(async () => {

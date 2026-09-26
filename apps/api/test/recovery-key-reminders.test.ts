@@ -59,6 +59,7 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
       id,
       email,
       authMode: 'google',
+      authProvider: 'google',
       recoveryKeyIssuedAt: overrides.recoveryKeyIssuedAt,
       recoveryKeyReminder7dSentAt: overrides.recoveryKeyReminder7dSentAt ?? null,
       recoveryKeyReminder30dSentAt: overrides.recoveryKeyReminder30dSentAt ?? null,

@@ -30,9 +30,12 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
     beforeAll(async () => {
       await runMigrations(DATABASE_URL!, APP_DB_ROLE_PASSWORD);
       const ownerDb = drizzle(ownerClient, { schema: { users } });
-      await ownerDb
-        .insert(users)
-        .values({ id: testUser.id, email: testUser.email, authMode: 'google' });
+      await ownerDb.insert(users).values({
+        id: testUser.id,
+        email: testUser.email,
+        authMode: 'google',
+        authProvider: 'google',
+      });
     });
 
     afterAll(async () => {

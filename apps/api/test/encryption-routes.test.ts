@@ -41,9 +41,12 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('Encryption setup/change rou
   async function createTestUser() {
     const testUser = { id: randomUUID(), email: `encryption-test-${randomUUID()}@example.com` };
     const ownerDb = drizzle(ownerClient, { schema: { users } });
-    await ownerDb
-      .insert(users)
-      .values({ id: testUser.id, email: testUser.email, authMode: 'google' });
+    await ownerDb.insert(users).values({
+      id: testUser.id,
+      email: testUser.email,
+      authMode: 'google',
+      authProvider: 'google',
+    });
     return testUser;
   }
 
