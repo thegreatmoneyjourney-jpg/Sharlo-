@@ -8,6 +8,15 @@ COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 
 COPY apps/web ./apps/web
+
+# NEXT_PUBLIC_* vars are inlined into the client bundle at build time, not
+# read at container-start time — this must be a build ARG, not a
+# docker-compose `environment:` entry (which would have zero effect on
+# what's actually baked into the bundle already produced below). See
+# docker-compose.yml's `web` service `build.args`.
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+
 RUN npm run build -w web
 
 FROM node:22-alpine AS runner

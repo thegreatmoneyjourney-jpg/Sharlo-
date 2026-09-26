@@ -5,6 +5,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type * as schema from './db/schema.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes, type AuthRoutesOptions } from './routes/auth.js';
+import { encryptionRoutes } from './routes/encryption.js';
 import { registerCsrfProtection } from './auth/csrf-protection.js';
 
 export interface BuildAppOptions {
@@ -43,6 +44,7 @@ export function buildApp(opts: BuildAppOptions): FastifyInstance {
     useSecureCookies: opts.useSecureCookies,
     googleOAuthClient: opts.googleOAuthClient,
   });
+  app.register(encryptionRoutes, { db: opts.db });
 
   return app;
 }

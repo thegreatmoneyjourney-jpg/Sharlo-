@@ -57,6 +57,13 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        # M3-003 — must be a build ARG, not a runtime `environment:` entry
+        # below: Next.js inlines NEXT_PUBLIC_* vars into the client bundle
+        # at `next build` time (see apps/web/Dockerfile), so anything set
+        # only at container-run time would have no effect on what the
+        # browser actually receives. Same API_DOMAIN Caddy already needs.
+        NEXT_PUBLIC_API_BASE_URL: https://${API_DOMAIN:?set in .env}
     restart: unless-stopped
     environment:
       NODE_ENV: production

@@ -93,7 +93,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('auth routes: Google OAuth P
     }
   }
 
-  it('completes the full handshake: creates a user, a session, and redirects to the app', async () => {
+  it('completes the full handshake: creates a user, a session, and redirects to /settings (M3-003: the one authenticated page that exists yet, and self-determines setup-vs-change mode)', async () => {
     const googleSub = `google-sub-${randomUUID()}`;
     const email = `auth-route-test-${randomUUID()}@example.com`;
     const { app } = buildTestApp({
@@ -116,7 +116,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('auth routes: Google OAuth P
       });
 
       expect(callbackResponse.statusCode).toBe(302);
-      expect(callbackResponse.headers.location).toBe('https://app.example.com');
+      expect(callbackResponse.headers.location).toBe('https://app.example.com/settings');
 
       const sessionCookie = callbackResponse.cookies.find((c) => c.name === 'sharlo_session');
       const csrfCookie = callbackResponse.cookies.find((c) => c.name === 'sharlo_csrf');
