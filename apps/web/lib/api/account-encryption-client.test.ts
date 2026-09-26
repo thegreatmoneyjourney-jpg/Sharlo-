@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchEncryptionParams,
+  fetchRecoveryKeyReminderStatus,
   submitEncryptionSetup,
   submitPassphraseChange,
+  submitRecoveryKeyReminderConfirm,
 } from './account-encryption-client';
 
 describe('account-encryption-client', () => {
@@ -73,6 +75,50 @@ describe('account-encryption-client', () => {
         wrappedMasterKeyByPassphrase: 'ab',
         kdfSalt: 'ef',
         kdfParams: { algorithm: 'argon2id', opsLimit: 1, memLimit: 1 },
+      }),
+    ).rejects.toThrow(/409/);
+  });
+
+  it('fetchRecoveryKeyReminderStatus sends credentials and returns the parsed body', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => ({ showBanner: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchRecoveryKeyReminderStatus();
+
+    expect(result).toEqual({ showBanner: true });
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toContain('/account/recovery-key-reminder-status');
+    expect(options.credentials).toBe('include');
+  });
+
+  it('fetchRecoveryKeyReminderStatus throws on a non-OK response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+    await expect(fetchRecoveryKeyReminderStatus()).rejects.toThrow(/401/);
+  });
+
+  it('submitRecoveryKeyReminderConfirm posts to the confirm endpoint with the CSRF header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await submitRecoveryKeyReminderConfirm({
+      wrappedMasterKeyByRecovery: 'cd',
+      recoveryKeyVerifier: '12',
+    });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toContain('/account/recovery-key-reminder-confirm');
+    expect(options.method).toBe('POST');
+    expect(options.headers['x-csrf-token']).toBe('test-csrf-token-value');
+  });
+
+  it('submitRecoveryKeyReminderConfirm throws on a non-OK response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }));
+    await expect(
+      submitRecoveryKeyReminderConfirm({
+        wrappedMasterKeyByRecovery: 'cd',
+        recoveryKeyVerifier: '12',
       }),
     ).rejects.toThrow(/409/);
   });

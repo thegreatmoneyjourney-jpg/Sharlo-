@@ -16,28 +16,34 @@ const {
   fetchEncryptionParamsMock,
   submitEncryptionSetupMock,
   submitPassphraseChangeMock,
+  submitRecoveryKeyReminderConfirmMock,
   setupEncryptionMock,
   unwrapMasterKeyByPassphraseMock,
   rewrapMasterKeyByNewPassphraseMock,
+  rewrapMasterKeyByNewRecoveryKeyMock,
 } = vi.hoisted(() => ({
   fetchEncryptionParamsMock: vi.fn(),
   submitEncryptionSetupMock: vi.fn(),
   submitPassphraseChangeMock: vi.fn(),
+  submitRecoveryKeyReminderConfirmMock: vi.fn(),
   setupEncryptionMock: vi.fn(),
   unwrapMasterKeyByPassphraseMock: vi.fn(),
   rewrapMasterKeyByNewPassphraseMock: vi.fn(),
+  rewrapMasterKeyByNewRecoveryKeyMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api/account-encryption-client', () => ({
   fetchEncryptionParams: fetchEncryptionParamsMock,
   submitEncryptionSetup: submitEncryptionSetupMock,
   submitPassphraseChange: submitPassphraseChangeMock,
+  submitRecoveryKeyReminderConfirm: submitRecoveryKeyReminderConfirmMock,
 }));
 
 vi.mock('@/lib/crypto/master-key', () => ({
   setupEncryption: setupEncryptionMock,
   unwrapMasterKeyByPassphrase: unwrapMasterKeyByPassphraseMock,
   rewrapMasterKeyByNewPassphrase: rewrapMasterKeyByNewPassphraseMock,
+  rewrapMasterKeyByNewRecoveryKey: rewrapMasterKeyByNewRecoveryKeyMock,
 }));
 
 const FAKE_SETUP_RESULT = {
@@ -53,9 +59,11 @@ beforeEach(() => {
   fetchEncryptionParamsMock.mockReset();
   submitEncryptionSetupMock.mockReset().mockResolvedValue(undefined);
   submitPassphraseChangeMock.mockReset().mockResolvedValue(undefined);
+  submitRecoveryKeyReminderConfirmMock.mockReset().mockResolvedValue(undefined);
   setupEncryptionMock.mockReset().mockResolvedValue(FAKE_SETUP_RESULT);
   unwrapMasterKeyByPassphraseMock.mockReset();
   rewrapMasterKeyByNewPassphraseMock.mockReset();
+  rewrapMasterKeyByNewRecoveryKeyMock.mockReset();
 });
 
 afterEach(() => {
@@ -196,6 +204,69 @@ describe('SettingsClient', () => {
 
       expect(await screen.findByText(/incorrect current passphrase/i)).toBeInTheDocument();
       expect(submitPassphraseChangeMock).not.toHaveBeenCalled();
+    });
+
+    describe('Recovery Key reconfirmation (M3-004/FR-AUTH-09)', () => {
+      const fakeMasterKey = new Uint8Array([9, 9, 9]);
+      const rotatedRecoveryKey = {
+        recoveryKeyDisplay: 'ffff-eeee-dddd-cccc',
+        wrappedMasterKeyByRecovery: 'new-recovery-wrap',
+        recoveryKeyVerifier: 'new-verifier',
+      };
+
+      it('unwraps the master key, rotates the Recovery Key, and requires confirmation before submitting', async () => {
+        unwrapMasterKeyByPassphraseMock.mockResolvedValue(fakeMasterKey);
+        rewrapMasterKeyByNewRecoveryKeyMock.mockResolvedValue(rotatedRecoveryKey);
+
+        render(<SettingsClient />);
+        const passphraseInput = await screen.findByLabelText(
+          /confirm your encryption passphrase to continue/i,
+        );
+        fireEvent.change(passphraseInput, { target: { value: 'my-passphrase' } });
+        fireEvent.click(screen.getByRole('button', { name: /generate a new recovery key/i }));
+
+        expect(await screen.findByText(rotatedRecoveryKey.recoveryKeyDisplay)).toBeInTheDocument();
+        expect(unwrapMasterKeyByPassphraseMock).toHaveBeenCalledWith('my-passphrase', stored);
+        expect(rewrapMasterKeyByNewRecoveryKeyMock).toHaveBeenCalledWith(fakeMasterKey);
+
+        const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+        expect(confirmButton).toBeDisabled();
+
+        fireEvent.click(screen.getByRole('checkbox'));
+        fireEvent.click(confirmButton);
+
+        // Exact-shape assertion, not just "was called": a real bug caught
+        // here during this task's own development passed the whole `step`
+        // object through (including the raw `recoveryKeyDisplay`) instead
+        // of picking just these two fields, which would have sent the
+        // plaintext Recovery Key to the server. `toHaveBeenCalledWith` on
+        // an object literal fails on extra properties, not just missing
+        // ones, so this guards against that regression specifically.
+        await waitFor(() =>
+          expect(submitRecoveryKeyReminderConfirmMock).toHaveBeenCalledWith({
+            wrappedMasterKeyByRecovery: rotatedRecoveryKey.wrappedMasterKeyByRecovery,
+            recoveryKeyVerifier: rotatedRecoveryKey.recoveryKeyVerifier,
+          }),
+        );
+        const sentPayload = submitRecoveryKeyReminderConfirmMock.mock.calls[0][0];
+        expect(sentPayload).not.toHaveProperty('recoveryKeyDisplay');
+        expect(JSON.stringify(sentPayload)).not.toContain(rotatedRecoveryKey.recoveryKeyDisplay);
+        expect(await screen.findByText(/recovery key has been confirmed/i)).toBeInTheDocument();
+      });
+
+      it('shows an error and never rotates the key when the passphrase is wrong', async () => {
+        unwrapMasterKeyByPassphraseMock.mockRejectedValue(new Error('OperationError'));
+
+        render(<SettingsClient />);
+        const passphraseInput = await screen.findByLabelText(
+          /confirm your encryption passphrase to continue/i,
+        );
+        fireEvent.change(passphraseInput, { target: { value: 'wrong-passphrase' } });
+        fireEvent.click(screen.getByRole('button', { name: /generate a new recovery key/i }));
+
+        expect(await screen.findByText(/incorrect current passphrase/i)).toBeInTheDocument();
+        expect(rewrapMasterKeyByNewRecoveryKeyMock).not.toHaveBeenCalled();
+      });
     });
   });
 });
