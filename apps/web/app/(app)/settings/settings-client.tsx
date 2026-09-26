@@ -7,6 +7,7 @@ import {
   submitPassphraseChange,
   submitRecoveryKeyReminderConfirm,
 } from '@/lib/api/account-encryption-client';
+import { fetchAccountInfo } from '@/lib/api/account-client';
 import type { Argon2idParams } from '@/lib/crypto/argon2id';
 import {
   rewrapMasterKeyByNewPassphrase,
@@ -20,6 +21,7 @@ import {
   MIN_PASSPHRASE_LENGTH,
 } from '@/lib/crypto/passphrase-strength';
 import { RecoveryKeyRevealCard } from './recovery-key-reveal-card';
+import { BackupCard } from './backup-card';
 
 const PRIMARY_BUTTON_CLASSES =
   'rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40';
@@ -420,6 +422,24 @@ function ReconfirmRecoveryKeyFlow({
  */
 export default function SettingsClient() {
   const [state, setState] = useState<PageState>({ status: 'loading' });
+  const [isLocalOnly, setIsLocalOnly] = useState(false);
+
+  // Independent of the encryption-params fetch below on purpose: whether
+  // the Backup card renders doesn't depend on encryption-setup status
+  // (`BackupCard`'s own doc comment), and a failure here (e.g. signed
+  // out) shouldn't affect that flow's own state machine — soft-fail,
+  // same as the account-wide banners.
+  useEffect(() => {
+    let cancelled = false;
+    fetchAccountInfo()
+      .then((info) => {
+        if (!cancelled) setIsLocalOnly(info.authMode === 'local_only');
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -504,6 +524,15 @@ export default function SettingsClient() {
           </div>
         </>
       )}
+
+      {/* FR-AUTH-06: "available from the first session" — rendered for
+          every non-loading/-signed-out/-error state, not just once
+          encryption setup completes (import/export never touch the
+          master key, so there's nothing to wait for). */}
+      {isLocalOnly &&
+        (state.status === 'needs-setup' ||
+          state.status === 'setup-complete' ||
+          state.status === 'can-change-passphrase') && <BackupCard />}
     </div>
   );
 }
