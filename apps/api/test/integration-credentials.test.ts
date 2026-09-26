@@ -39,13 +39,18 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
     });
 
     it('stores a credential and reads back the original plaintext', async () => {
-      await setCredential(appDb, testProvider, 'api_key', 'sk_live_abc123');
+      await setCredential(appDb, testProvider, 'api_key', 'placeholder test value one, not real');
       const value = await getCredential(appDb, testProvider, 'api_key');
-      expect(value).toBe('sk_live_abc123');
+      expect(value).toBe('placeholder test value one, not real');
     });
 
     it('never stores the plaintext value in the encrypted_value column', async () => {
-      await setCredential(appDb, testProvider, 'client_secret', 'super-secret-oauth-value');
+      await setCredential(
+        appDb,
+        testProvider,
+        'client_secret',
+        'placeholder oauth test value, not real',
+      );
 
       const rows = await ownerClient`
         select encrypted_value from integration_credentials
@@ -53,12 +58,19 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
       `;
       const rawColumnValue: Buffer = rows[0]?.encrypted_value;
       expect(rawColumnValue).toBeDefined();
-      expect(rawColumnValue.toString('utf8')).not.toContain('super-secret-oauth-value');
+      expect(rawColumnValue.toString('utf8')).not.toContain(
+        'placeholder oauth test value, not real',
+      );
     });
 
     it('upserts on (provider, key_name) — a second write updates the same row, not a duplicate', async () => {
-      await setCredential(appDb, testProvider, 'rotatable_key', 'original-value');
-      await setCredential(appDb, testProvider, 'rotatable_key', 'rotated-value');
+      await setCredential(
+        appDb,
+        testProvider,
+        'rotatable_key',
+        'placeholder value before rotation',
+      );
+      await setCredential(appDb, testProvider, 'rotatable_key', 'placeholder value after rotation');
 
       const rows = await appDb
         .select()
@@ -70,7 +82,9 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)(
           ),
         );
       expect(rows).toHaveLength(1);
-      expect(await getCredential(appDb, testProvider, 'rotatable_key')).toBe('rotated-value');
+      expect(await getCredential(appDb, testProvider, 'rotatable_key')).toBe(
+        'placeholder value after rotation',
+      );
     });
 
     it('throws when no credential is stored for a given provider/keyName', async () => {

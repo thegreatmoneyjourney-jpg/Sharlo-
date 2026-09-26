@@ -11,13 +11,13 @@ describe('credential-store: encrypt/decrypt (no DB needed)', () => {
   });
 
   it('round-trips a value through encrypt then decrypt', () => {
-    const plaintext = 'sk_live_this_is_a_secret_api_key';
+    const plaintext = 'not-a-real-secret-just-test-fixture-data';
     const encrypted = encryptCredentialValue(plaintext);
     expect(decryptCredentialValue(encrypted)).toBe(plaintext);
   });
 
   it('never stores the plaintext value as a readable substring of the ciphertext', () => {
-    const plaintext = 'sk_live_this_is_a_secret_api_key';
+    const plaintext = 'not-a-real-secret-just-test-fixture-data';
     const encrypted = encryptCredentialValue(plaintext);
     expect(encrypted.toString('utf8')).not.toContain(plaintext);
     expect(encrypted.toString('base64')).not.toContain(Buffer.from(plaintext).toString('base64'));
@@ -33,7 +33,7 @@ describe('credential-store: encrypt/decrypt (no DB needed)', () => {
   });
 
   it('fails closed (throws) if the ciphertext is tampered with, rather than returning corrupted plaintext', () => {
-    const encrypted = encryptCredentialValue('a-secret-value');
+    const encrypted = encryptCredentialValue('placeholder test value, not a real credential');
     const tampered = Buffer.from(encrypted);
     tampered[tampered.length - 1] = (tampered[tampered.length - 1] ?? 0) ^ 0xff;
     expect(() => decryptCredentialValue(tampered)).toThrow();
