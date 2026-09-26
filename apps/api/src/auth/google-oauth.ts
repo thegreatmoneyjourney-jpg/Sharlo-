@@ -77,6 +77,44 @@ export async function exchangeCodeForTokens(
   return (await response.json()) as GoogleTokenResponse;
 }
 
+export interface GoogleRefreshedTokenResponse {
+  access_token: string;
+  expires_in: number;
+  scope: string;
+  token_type: string;
+  // Google's refresh grant never returns a new refresh_token — the
+  // original one stays valid indefinitely until revoked.
+}
+
+/**
+ * `M3-006` — mints a fresh, short-lived access token from a previously
+ * stored refresh token (`users.googleRefreshTokenEncrypted`). Injectable
+ * `fetch` for the same testing reason `exchangeCodeForTokens` already has
+ * one — this project has no real Google OAuth credentials configured
+ * anywhere (sandbox or CI), so every test of this exercises a mocked
+ * Google endpoint, never the real one; see `docs/reports/SHARLO-M3-006.md`
+ * for what that does and doesn't prove.
+ */
+export async function refreshAccessToken(
+  params: { clientId: string; clientSecret: string; refreshToken: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<GoogleRefreshedTokenResponse> {
+  const response = await fetchImpl(GOOGLE_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: params.clientId,
+      client_secret: params.clientSecret,
+      refresh_token: params.refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Google token refresh failed: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as GoogleRefreshedTokenResponse;
+}
+
 export async function fetchGoogleUserInfo(
   accessToken: string,
   fetchImpl: typeof fetch = fetch,
