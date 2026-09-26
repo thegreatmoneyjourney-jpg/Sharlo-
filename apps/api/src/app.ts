@@ -9,6 +9,7 @@ import { authRoutes, type AuthRoutesOptions } from './routes/auth.js';
 import { accountRoutes } from './routes/account.js';
 import { encryptionRoutes } from './routes/encryption.js';
 import { emailOtpRoutes } from './routes/email-otp.js';
+import { driveRoutes, type DriveRoutesOptions } from './routes/drive.js';
 import { registerCsrfProtection } from './auth/csrf-protection.js';
 import type { EmailSender } from './email/email-sender.js';
 
@@ -21,6 +22,7 @@ export interface BuildAppOptions {
   /** Optional so every pre-existing test that builds an app without caring about email-OTP routes keeps working unchanged. Omitting it is fine UNLESS a test actually exercises `/auth/email-otp/*` — then it should provide its own mock, and get a loud, clear failure here otherwise, not a silent false-pass. */
   emailSender?: EmailSender;
   googleOAuthClient?: AuthRoutesOptions['googleOAuthClient'];
+  refreshAccessToken?: DriveRoutesOptions['refreshAccessToken'];
 }
 
 const NO_EMAIL_SENDER_CONFIGURED: EmailSender = {
@@ -71,6 +73,7 @@ export function buildApp(opts: BuildAppOptions): FastifyInstance {
     emailSender: opts.emailSender ?? NO_EMAIL_SENDER_CONFIGURED,
     useSecureCookies: opts.useSecureCookies,
   });
+  app.register(driveRoutes, { db: opts.db, refreshAccessToken: opts.refreshAccessToken });
 
   return app;
 }

@@ -8,8 +8,8 @@
  * tagging (`type`/`recordId`) lets the app find its own files without a
  * decrypt. What exactly an envelope's encrypted-payload fields look like
  * is deliberately NOT this module's concern (see the doc comment on
- * `StoredEnvelope` below) — whichever future task first writes a real
- * envelope (`M3-006` onward) owns that decision.
+ * `StoredEnvelope` below) — `M3-006`'s `envelope-crypto.ts` is the actual
+ * producer/consumer of that shape (a single hex `ciphertext` field).
  *
  * No third-party IndexedDB wrapper: four operations over one object
  * store don't need one, and IndexedDB's callback API is thin enough to
@@ -27,14 +27,14 @@ const TYPE_INDEX_NAME = 'type';
  * `type` to index/filter by, `schemaVersion` because every envelope
  * `ARCHITECTURE.md` §7 describes has one) — everything else is whatever
  * shape the writer chose for its encrypted payload, which this store
- * never reads. Deliberately not typed against the doc's illustrative
- * `iv`/`ciphertext`/`authTag` split: that shape doesn't match the
- * *actual*, already-tested `aesGcmEncrypt`/`aesGcmDecrypt` primitives in
- * `../crypto/aes-gcm.ts`, which produce/expect one combined blob, not
- * three separate fields — a documentation/implementation mismatch found
- * while building this, flagged in `docs/reports/SHARLO-M3-005.md` rather
- * than silently guessed at, since nothing has actually written a real
- * envelope yet to force the resolution either way.
+ * never reads. In practice that's `envelope-crypto.ts`'s single hex
+ * `ciphertext` field (`M3-006` — resolving the doc/code mismatch
+ * `docs/reports/SHARLO-M3-005.md` flagged, where `ARCHITECTURE.md` §7's
+ * then-illustrative JSON showed a separate `iv`/`ciphertext`/`authTag`
+ * split that was never actually implemented), but this store's own type
+ * stays generic rather than importing that shape — it's a dumb KV store,
+ * not a place that should ever need to know its payload's internal
+ * layout.
  */
 export interface StoredEnvelope {
   schemaVersion: number;
