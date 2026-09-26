@@ -5,10 +5,12 @@ import {
   fetchEncryptionParams,
   submitEncryptionSetup,
   submitPassphraseChange,
+  submitRecoveryKeyReminderConfirm,
 } from '@/lib/api/account-encryption-client';
 import type { Argon2idParams } from '@/lib/crypto/argon2id';
 import {
   rewrapMasterKeyByNewPassphrase,
+  rewrapMasterKeyByNewRecoveryKey,
   setupEncryption,
   unwrapMasterKeyByPassphrase,
   type EncryptionSetupResult,
@@ -17,6 +19,7 @@ import {
   evaluatePassphraseStrength,
   MIN_PASSPHRASE_LENGTH,
 } from '@/lib/crypto/passphrase-strength';
+import { RecoveryKeyRevealCard } from './recovery-key-reveal-card';
 
 const PRIMARY_BUTTON_CLASSES =
   'rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40';
@@ -104,33 +107,13 @@ function SetupFlow({ onDone }: { onDone: () => void }) {
     }
   }
 
-  function downloadRecoveryKey(recoveryKeyDisplay: string) {
-    const blob = new Blob(
-      [
-        'Sharlo Recovery Key\n\n',
-        `${recoveryKeyDisplay}\n\n`,
-        'Keep this somewhere safe (e.g. a password manager, or printed and stored securely).\n',
-        'If you lose both your Encryption Passphrase and this Recovery Key, your data cannot be recovered by Sharlo or anyone else — we never have access to either.\n',
-      ],
-      { type: 'text/plain' },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'sharlo-recovery-key.txt';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   if (step.name === 'show-recovery-key') {
     const { result } = step;
     return (
-      <div className="flex flex-col gap-4">
-        <div className="rounded-md border border-amber-400 bg-amber-50 p-4 dark:border-amber-600 dark:bg-amber-950">
-          <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
-            Save your Recovery Key now — this is shown only once
-          </h2>
-          <p className="mt-2 text-sm text-amber-900 dark:text-amber-200">
+      <RecoveryKeyRevealCard
+        heading="Save your Recovery Key now — this is shown only once"
+        description={
+          <>
             Your student data is encrypted so that only you can read it — not even Sharlo can. If
             you forget your Encryption Passphrase, this Recovery Key is the <strong>only</strong>{' '}
             other way in.{' '}
@@ -141,42 +124,17 @@ function SetupFlow({ onDone }: { onDone: () => void }) {
             — by anyone, including us. We&apos;ll remind you to reconfirm you still have it saved at
             7 and 30 days from now, but that reminder can&apos;t help if this copy is lost before
             then.
-          </p>
-        </div>
-
-        <div className="rounded-md border border-zinc-300 bg-zinc-50 p-3 font-mono text-sm break-all dark:border-zinc-700 dark:bg-zinc-900">
-          {result.recoveryKeyDisplay}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => downloadRecoveryKey(result.recoveryKeyDisplay)}
-          className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          Download as text file
-        </button>
-
-        <label className="flex items-start gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-          <input
-            type="checkbox"
-            checked={confirmedSaved}
-            onChange={(e) => setConfirmedSaved(e.target.checked)}
-            className="mt-0.5"
-          />
-          I&apos;ve saved my Recovery Key somewhere safe
-        </label>
-
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-
-        <button
-          type="button"
-          disabled={!confirmedSaved || busy}
-          onClick={() => handleConfirmRecoveryKeySaved(result)}
-          className={PRIMARY_BUTTON_CLASSES}
-        >
-          {busy ? 'Saving…' : 'Continue'}
-        </button>
-      </div>
+          </>
+        }
+        recoveryKeyDisplay={result.recoveryKeyDisplay}
+        confirmedSaved={confirmedSaved}
+        onConfirmedSavedChange={setConfirmedSaved}
+        busy={busy}
+        busyLabel="Saving…"
+        continueLabel="Continue"
+        error={error}
+        onContinue={() => handleConfirmRecoveryKeySaved(result)}
+      />
     );
   }
 
@@ -321,6 +279,136 @@ function ChangePassphraseFlow({
 }
 
 /**
+ * `M3-004`/FR-AUTH-09 — the founder-required re-confirmation action behind
+ * the reminder banner. Requires the current passphrase first (same
+ * precondition as changing it: proves the teacher can still unwrap the
+ * master key) because rotating the Recovery Key needs that master key.
+ * Issues a *brand-new* Recovery Key rather than re-displaying the
+ * original one — see `rotateRecoveryKey` (API) and
+ * `rewrapMasterKeyByNewRecoveryKey` (crypto) for why that's the only thing
+ * "re-confirm" can mean in a true zero-knowledge design.
+ */
+function ReconfirmRecoveryKeyFlow({
+  stored,
+}: {
+  stored: Extract<PageState, { status: 'can-change-passphrase' }>['stored'];
+}) {
+  const [step, setStep] = useState<
+    | { name: 'enter-passphrase' }
+    | {
+        name: 'show-new-recovery-key';
+        recoveryKeyDisplay: string;
+        wrappedMasterKeyByRecovery: string;
+        recoveryKeyVerifier: string;
+      }
+    | { name: 'done' }
+  >({ name: 'enter-passphrase' });
+  const [currentPassphrase, setCurrentPassphrase] = useState('');
+  const [confirmedSaved, setConfirmedSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleGenerateNewRecoveryKey() {
+    setError(null);
+    setBusy(true);
+    try {
+      const masterKey = await unwrapMasterKeyByPassphrase(currentPassphrase, stored);
+      const rotated = await rewrapMasterKeyByNewRecoveryKey(masterKey);
+      setStep({ name: 'show-new-recovery-key', ...rotated });
+    } catch {
+      setError('Incorrect current passphrase, or something went wrong. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConfirmNewRecoveryKeySaved(fields: {
+    wrappedMasterKeyByRecovery: string;
+    recoveryKeyVerifier: string;
+  }) {
+    setError(null);
+    setBusy(true);
+    try {
+      await submitRecoveryKeyReminderConfirm(fields);
+      setStep({ name: 'done' });
+    } catch {
+      setError('Something went wrong saving your new Recovery Key. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (step.name === 'done') {
+    return (
+      <p className="text-sm text-emerald-700 dark:text-emerald-400">
+        Your Recovery Key has been confirmed. Your old Recovery Key no longer works — only the new
+        one you just saved does.
+      </p>
+    );
+  }
+
+  if (step.name === 'show-new-recovery-key') {
+    return (
+      <RecoveryKeyRevealCard
+        heading="Here's your new Recovery Key — save it now"
+        description={
+          <>
+            Your old Recovery Key no longer works. This is shown only once —{' '}
+            <strong>
+              if you lose both your passphrase and this Recovery Key, your data is permanently
+              unrecoverable
+            </strong>
+            , by anyone, including us.
+          </>
+        }
+        recoveryKeyDisplay={step.recoveryKeyDisplay}
+        confirmedSaved={confirmedSaved}
+        onConfirmedSavedChange={setConfirmedSaved}
+        busy={busy}
+        busyLabel="Saving…"
+        continueLabel="Confirm"
+        error={error}
+        onContinue={() =>
+          handleConfirmNewRecoveryKeySaved({
+            wrappedMasterKeyByRecovery: step.wrappedMasterKeyByRecovery,
+            recoveryKeyVerifier: step.recoveryKeyVerifier,
+          })
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        Generate a new Recovery Key and confirm you&apos;ve saved it. Your old Recovery Key will
+        stop working once you do.
+      </p>
+      <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+        Confirm your Encryption Passphrase to continue
+        <input
+          type="password"
+          value={currentPassphrase}
+          onChange={(e) => setCurrentPassphrase(e.target.value)}
+          className={INPUT_CLASSES}
+        />
+      </label>
+
+      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      <button
+        type="button"
+        disabled={currentPassphrase.length === 0 || busy}
+        onClick={handleGenerateNewRecoveryKey}
+        className={PRIMARY_BUTTON_CLASSES}
+      >
+        {busy ? 'Generating…' : 'Generate a new Recovery Key'}
+      </button>
+    </div>
+  );
+}
+
+/**
  * `M3-003` — the only authenticated page that exists yet (`auth.ts`'s
  * OAuth callback redirects here unconditionally). Self-determines which
  * flow to show from `GET /account/encryption-params` rather than the
@@ -405,7 +493,17 @@ export default function SettingsClient() {
         </p>
       )}
 
-      {state.status === 'can-change-passphrase' && <ChangePassphraseFlow stored={state.stored} />}
+      {state.status === 'can-change-passphrase' && (
+        <>
+          <ChangePassphraseFlow stored={state.stored} />
+          <div id="recovery-key" className="border-t border-zinc-200 pt-6 dark:border-zinc-800">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Recovery Key</h2>
+            <div className="mt-3">
+              <ReconfirmRecoveryKeyFlow stored={state.stored} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

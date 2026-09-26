@@ -8,6 +8,8 @@ import {
   EncryptionAlreadySetUpError,
   EncryptionNotSetUpError,
   getEncryptionParams,
+  getRecoveryKeyReminderStatus,
+  rotateRecoveryKey,
   setupAccountEncryption,
 } from '../auth/account-encryption.js';
 
@@ -45,6 +47,11 @@ const changePassphraseBodySchema = z.object({
   wrappedMasterKeyByPassphrase: hexStringSchema,
   kdfSalt: hexStringSchema,
   kdfParams: kdfParamsSchema,
+});
+
+const rotateRecoveryKeyBodySchema = z.object({
+  wrappedMasterKeyByRecovery: hexStringSchema,
+  recoveryKeyVerifier: hexStringSchema,
 });
 
 export interface EncryptionRoutesOptions {
@@ -113,6 +120,42 @@ export async function encryptionRoutes(
 
     try {
       await changeAccountPassphrase(db, session.userId, parsed.data);
+    } catch (error) {
+      if (error instanceof EncryptionNotSetUpError) {
+        return reply.code(409).send({ error: 'encryption_not_set_up' });
+      }
+      throw error;
+    }
+    return reply.code(204).send();
+  });
+
+  // FR-AUTH-09 — polled by the app-wide banner (`apps/web/app/(app)/layout.tsx`),
+  // not just the settings page, so it's a cheap, standalone read rather
+  // than piggybacking on `encryption-params` (which returns wrapped-key
+  // material most pages have no reason to fetch).
+  app.get('/account/recovery-key-reminder-status', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const status = await getRecoveryKeyReminderStatus(db, session.userId);
+    return reply.code(200).send(status);
+  });
+
+  // The founder-required re-confirmation action: rotates to a brand-new
+  // Recovery Key (see `rotateRecoveryKey`'s own doc comment for why this,
+  // not a re-display, is what "re-confirm" has to mean) and stops the
+  // reminder banner/emails.
+  app.post('/account/recovery-key-reminder-confirm', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const parsed = rotateRecoveryKeyBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_body', details: parsed.error.flatten() });
+    }
+
+    try {
+      await rotateRecoveryKey(db, session.userId, parsed.data);
     } catch (error) {
       if (error instanceof EncryptionNotSetUpError) {
         return reply.code(409).send({ error: 'encryption_not_set_up' });

@@ -52,6 +52,15 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('Encryption setup/change rou
     await ownerClient`DELETE FROM users WHERE id = ${userId}`;
   }
 
+  /** `M3-004` — backdates `recovery_key_issued_at` directly via SQL, since the normal setup flow always sets it to `now()`. */
+  async function setRecoveryKeyIssuedAt(userId: string, issuedAt: Date) {
+    await ownerClient`UPDATE users SET recovery_key_issued_at = ${issuedAt.toISOString()} WHERE id = ${userId}`;
+  }
+
+  function daysAgo(days: number): Date {
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  }
+
   async function buildTestApp() {
     const app = buildApp({
       db: appDb,
@@ -288,6 +297,159 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('Encryption setup/change rou
         // Untouched by the passphrase-only change:
         expect(stored.wrappedMasterKeyByRecovery).toBe(originalSetup.wrappedMasterKeyByRecovery);
         expect(stored.recoveryKeyVerifier).toBe(originalSetup.recoveryKeyVerifier);
+      } finally {
+        await app.close();
+        await cleanupUser(user.id);
+      }
+    });
+  });
+
+  describe('GET /account/recovery-key-reminder-status', () => {
+    it('rejects a request with no session', async () => {
+      const app = await buildTestApp();
+      try {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/account/recovery-key-reminder-status',
+        });
+        expect(response.statusCode).toBe(401);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('reports showBanner: false for a brand-new account (no Recovery Key issued yet)', async () => {
+      const app = await buildTestApp();
+      const user = await createTestUser();
+      try {
+        const session = await createSession(appDb, user.id);
+        const response = await app.inject({
+          method: 'GET',
+          url: '/account/recovery-key-reminder-status',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ showBanner: false });
+      } finally {
+        await app.close();
+        await cleanupUser(user.id);
+      }
+    });
+
+    it('reports showBanner: true once 7 days have passed since setup', async () => {
+      const app = await buildTestApp();
+      const user = await createTestUser();
+      try {
+        const session = await createSession(appDb, user.id);
+        await app.inject({
+          method: 'POST',
+          url: '/account/encryption-setup',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+          headers: { 'x-csrf-token': session.csrfToken },
+          payload: validSetupBody(),
+        });
+        await setRecoveryKeyIssuedAt(user.id, daysAgo(8));
+
+        const response = await app.inject({
+          method: 'GET',
+          url: '/account/recovery-key-reminder-status',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+        });
+        expect(response.json()).toEqual({ showBanner: true });
+      } finally {
+        await app.close();
+        await cleanupUser(user.id);
+      }
+    });
+  });
+
+  describe('POST /account/recovery-key-reminder-confirm', () => {
+    it('rejects a request with no session', async () => {
+      const app = await buildTestApp();
+      try {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/account/recovery-key-reminder-confirm',
+          payload: {
+            wrappedMasterKeyByRecovery: 'ab'.repeat(60),
+            recoveryKeyVerifier: '12'.repeat(32),
+          },
+        });
+        expect(response.statusCode).toBe(401);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('rejects confirming before encryption has ever been set up', async () => {
+      const app = await buildTestApp();
+      const user = await createTestUser();
+      try {
+        const session = await createSession(appDb, user.id);
+        const response = await app.inject({
+          method: 'POST',
+          url: '/account/recovery-key-reminder-confirm',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+          headers: { 'x-csrf-token': session.csrfToken },
+          payload: {
+            wrappedMasterKeyByRecovery: 'ab'.repeat(60),
+            recoveryKeyVerifier: '12'.repeat(32),
+          },
+        });
+        expect(response.statusCode).toBe(409);
+      } finally {
+        await app.close();
+        await cleanupUser(user.id);
+      }
+    });
+
+    it('persists the new recovery wrap, stops the banner, and leaves the passphrase wrap untouched', async () => {
+      const app = await buildTestApp();
+      const user = await createTestUser();
+      try {
+        const session = await createSession(appDb, user.id);
+        const originalSetup = validSetupBody();
+        await app.inject({
+          method: 'POST',
+          url: '/account/encryption-setup',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+          headers: { 'x-csrf-token': session.csrfToken },
+          payload: originalSetup,
+        });
+        await setRecoveryKeyIssuedAt(user.id, daysAgo(8));
+
+        const rotated = {
+          wrappedMasterKeyByRecovery: 'ff'.repeat(60),
+          recoveryKeyVerifier: 'ee'.repeat(32),
+        };
+        const confirmResponse = await app.inject({
+          method: 'POST',
+          url: '/account/recovery-key-reminder-confirm',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+          headers: { 'x-csrf-token': session.csrfToken },
+          payload: rotated,
+        });
+        expect(confirmResponse.statusCode).toBe(204);
+
+        const getResponse = await app.inject({
+          method: 'GET',
+          url: '/account/encryption-params',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+        });
+        const stored = getResponse.json();
+        expect(stored.wrappedMasterKeyByRecovery).toBe(rotated.wrappedMasterKeyByRecovery);
+        expect(stored.recoveryKeyVerifier).toBe(rotated.recoveryKeyVerifier);
+        // Untouched by a Recovery Key rotation:
+        expect(stored.wrappedMasterKeyByPassphrase).toBe(
+          originalSetup.wrappedMasterKeyByPassphrase,
+        );
+
+        const statusResponse = await app.inject({
+          method: 'GET',
+          url: '/account/recovery-key-reminder-status',
+          cookies: { sharlo_session: app.signCookie(session.token) },
+        });
+        expect(statusResponse.json()).toEqual({ showBanner: false });
       } finally {
         await app.close();
         await cleanupUser(user.id);

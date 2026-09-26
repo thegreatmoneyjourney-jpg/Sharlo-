@@ -80,3 +80,37 @@ export async function submitPassphraseChange(payload: PassphraseChangePayload): 
     throw new Error(`Failed to save new passphrase (HTTP ${response.status})`);
   }
 }
+
+export interface RecoveryKeyReminderStatusResponse {
+  showBanner: boolean;
+}
+
+/** M3-004/FR-AUTH-09 — polled by the app-wide banner, not just the settings page. */
+export async function fetchRecoveryKeyReminderStatus(): Promise<RecoveryKeyReminderStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/account/recovery-key-reminder-status`, {
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch recovery key reminder status (HTTP ${response.status})`);
+  }
+  return response.json();
+}
+
+export interface RecoveryKeyReminderConfirmPayload {
+  wrappedMasterKeyByRecovery: string;
+  recoveryKeyVerifier: string;
+}
+
+export async function submitRecoveryKeyReminderConfirm(
+  payload: RecoveryKeyReminderConfirmPayload,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/account/recovery-key-reminder-confirm`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', [CSRF_HEADER_NAME]: readCsrfCookie() },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to confirm Recovery Key (HTTP ${response.status})`);
+  }
+}

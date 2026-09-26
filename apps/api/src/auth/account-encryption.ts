@@ -118,6 +118,89 @@ export async function setupAccountEncryption(
   });
 }
 
+/** ADR-0005 addendum / FR-AUTH-09 — the in-app banner's own trigger, mirrored from `../scheduler/recovery-key-reminders.ts`'s sweep condition so both read the same rule. */
+const RECOVERY_KEY_REMINDER_BANNER_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface RecoveryKeyReminderStatus {
+  showBanner: boolean;
+}
+
+/**
+ * FR-AUTH-09: the in-app banner shows once 7 days have passed since the
+ * Recovery Key was issued, unless the teacher has since actively
+ * re-confirmed (`rotateRecoveryKey`, which sets `recoveryKeyReminderDismissedAt`).
+ * A brand-new account with no `recoveryKeyIssuedAt` yet never shows it —
+ * there's no Recovery Key to be reminded about until setup completes.
+ */
+export async function getRecoveryKeyReminderStatus(
+  db: Db,
+  userId: string,
+  now: Date = new Date(),
+): Promise<RecoveryKeyReminderStatus> {
+  const rows = await withTenantContext(db, userId, (tx) =>
+    tx
+      .select({
+        recoveryKeyIssuedAt: users.recoveryKeyIssuedAt,
+        recoveryKeyReminderDismissedAt: users.recoveryKeyReminderDismissedAt,
+      })
+      .from(users)
+      .where(eq(users.id, userId)),
+  );
+  const row = rows[0];
+  if (!row?.recoveryKeyIssuedAt || row.recoveryKeyReminderDismissedAt) {
+    return { showBanner: false };
+  }
+  const elapsedMs = now.getTime() - row.recoveryKeyIssuedAt.getTime();
+  return { showBanner: elapsedMs >= RECOVERY_KEY_REMINDER_BANNER_THRESHOLD_MS };
+}
+
+export interface RotateRecoveryKeyInput {
+  wrappedMasterKeyByRecovery: string;
+  recoveryKeyVerifier: string;
+}
+
+/**
+ * The founder-required re-confirmation action (ADR-0005 addendum: "re-
+ * download the Recovery Key + click 'I've securely stored this'"). Since
+ * neither the server nor the client ever retains the *original* raw
+ * Recovery Key after initial wrapping, "re-confirm the same key" isn't
+ * literally possible — this issues a brand-new one instead (the actual
+ * wrap/generation happens client-side, `apps/web/lib/crypto/master-key.ts`'s
+ * `rewrapMasterKeyByNewRecoveryKey`; this function only persists the
+ * result). Sets `recoveryKeyReminderDismissedAt` — per the ADR addendum's
+ * own wording, an explicit re-confirmation stops reminders outright,
+ * matching FR-AUTH-09's acceptance criterion ("no more after an explicit
+ * re-confirmation action") literally; it does not restart the 7-/30-day
+ * clock for a hypothetical future cycle, since neither the SRS nor the
+ * ADR describes one. Throws `EncryptionNotSetUpError` if called before
+ * initial setup, same as `changeAccountPassphrase` — there is no Recovery
+ * Key yet to rotate.
+ */
+export async function rotateRecoveryKey(
+  db: Db,
+  userId: string,
+  input: RotateRecoveryKeyInput,
+): Promise<void> {
+  await withTenantContext(db, userId, async (tx) => {
+    const existing = await tx
+      .select({ wrappedMasterKeyByPassphrase: users.wrappedMasterKeyByPassphrase })
+      .from(users)
+      .where(eq(users.id, userId));
+    if (!existing[0]?.wrappedMasterKeyByPassphrase) {
+      throw new EncryptionNotSetUpError();
+    }
+    await tx
+      .update(users)
+      .set({
+        wrappedMasterKeyByRecovery: input.wrappedMasterKeyByRecovery,
+        recoveryKeyVerifier: input.recoveryKeyVerifier,
+        recoveryKeyReminderDismissedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, userId));
+  });
+}
+
 export interface ChangePassphraseInput {
   wrappedMasterKeyByPassphrase: string;
   kdfSalt: string;
