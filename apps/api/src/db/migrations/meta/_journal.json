@@ -15,6 +15,13 @@
       "when": 1790330617834,
       "tag": "0001_blushing_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790405251732,
+      "tag": "0002_shocking_lady_vermin",
+      "breakpoints": true
     }
   ]
 }

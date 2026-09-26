@@ -39,6 +39,11 @@ services:
       # to the Row-Level Security policies in apps/api/src/db/schema.ts.
       APP_DATABASE_URL: postgres://app_user:${APP_DB_ROLE_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharlo}
       APP_DB_ROLE_PASSWORD: ${APP_DB_ROLE_PASSWORD:?set in .env}
+      # Envelope key for integration_credentials (ADR-0017, M0-010) — every
+      # actual integration secret (Resend, Paddle, Google OAuth, ...) lives
+      # in that table, encrypted with this key; this is the one credential
+      # allowed to be an env var, since it protects the rest, not one of them.
+      INTEGRATION_CREDENTIALS_KEY: ${INTEGRATION_CREDENTIALS_KEY:?set in .env}
     expose:
       - '4000'
 
