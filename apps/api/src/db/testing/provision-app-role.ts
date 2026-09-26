@@ -67,4 +67,8 @@ export async function grantAppRolePrivileges(sql: Sql): Promise<void> {
   // (logout/expiry) — nothing in this app ever mutates an existing
   // session row in place.
   await sql`GRANT SELECT, INSERT, DELETE ON sessions TO app_user`;
+  // M3-005/ADR-0018 — request-code inserts a new row and deletes prior
+  // outstanding ones for the same email; verify-code selects it and
+  // updates attempts/consumed_at.
+  await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON email_otp_codes TO app_user`;
 }
