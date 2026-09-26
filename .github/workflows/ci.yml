@@ -32,7 +32,7 @@ jobs:
       APP_DATABASE_URL: postgres://app_user:app_user_dev_password@localhost:5432/sharlo
       APP_DB_ROLE_PASSWORD: app_user_dev_password
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -52,7 +52,7 @@ jobs:
     name: Detection engine test harness (Playwright)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -84,7 +84,7 @@ jobs:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # gitleaks scans commit history, not just the checked-out tree —
           # a shallow clone would hide a secret committed and later
@@ -104,7 +104,7 @@ jobs:
     name: Docker images build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Validates infra/ (M0-005) actually builds — this sandbox has no
       # reachable Docker daemon to check this locally (docs/reports/
