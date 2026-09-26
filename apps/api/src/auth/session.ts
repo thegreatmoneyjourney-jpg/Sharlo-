@@ -1,7 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { withSessionLookupContext, withTenantContext } from '../db/client.js';
+import {
+  withSessionDeleteContext,
+  withSessionLookupContext,
+  withTenantContext,
+} from '../db/client.js';
 import { sessions } from '../db/schema.js';
 import type * as schema from '../db/schema.js';
 
@@ -63,7 +67,20 @@ export async function validateSessionToken(db: Db, token: string): Promise<Sessi
   };
 }
 
-/** Logs out one specific session (the current device/browser only — never every session for a user). */
+/**
+ * Logs out one specific session (the current device/browser only — never
+ * every session for a user). Needs both GUCs set (`withSessionDeleteContext`,
+ * not plain `withTenantContext`) — a DELETE's target row must be visible
+ * per an applicable SELECT policy in addition to satisfying the DELETE
+ * policy's own check, and `sessions`' SELECT policy is scoped against a
+ * different GUC (`session_lookup_token`) than its DELETE policy
+ * (`current_user_id`). Using only `current_user_id` here silently deletes
+ * zero rows, no error — a real bug this exact line once had, caught by
+ * `session.test.ts`'s own destroy-then-validate test, not found by
+ * inspection. See `docs/reports/SHARLO-M3-001.md`.
+ */
 export async function destroySession(db: Db, userId: string, token: string): Promise<void> {
-  await withTenantContext(db, userId, (tx) => tx.delete(sessions).where(eq(sessions.token, token)));
+  await withSessionDeleteContext(db, userId, token, (tx) =>
+    tx.delete(sessions).where(eq(sessions.token, token)),
+  );
 }

@@ -30,25 +30,33 @@ This is the most significant finding in this task. `users_self_access_only` (the
 
 This is flagged prominently, not just fixed quietly, because it's a real correctness gap in previously-shipped, previously-reported-as-done code (`M0-006`), and because the pattern (a purpose-built lookup GUC for "prove who you are" queries that precede tenant context) is one a future session adding a similar alternate-identifier lookup should reuse rather than rediscover. See `docs/ARCHITECTURE.md` §9 and §15 item 14, and `apps/api/src/db/client.ts`'s doc comments.
 
-### 4. Google's refresh token is stored now, encrypted, even though nothing reads it yet
+### 4. A second, more subtle RLS gap in the exact same area — DELETE silently affecting zero rows — caught by CI, not by review
+
+`sessions`' SELECT policy is scoped against `app.session_lookup_token`; its DELETE policy is scoped against `app.current_user_id` (Flag 3's pattern, deliberately using different GUCs for different operations on the same table). The first version of `destroySession` set only `current_user_id` before deleting — which satisfies the DELETE policy's own `USING` clause, but Postgres also requires the target row to be visible per an _applicable SELECT-side_ policy before an UPDATE/DELETE can touch it at all. Since `session_lookup_token` was never set in that transaction, the row was invisible for that purpose, and the DELETE silently affected zero rows — **no error, nothing in the logs, just a `sessions` row that was never actually removed.**
+
+This was caught by `session.test.ts`'s own "destroySession removes the row" test failing in CI (`expected {…} to be null`, got the still-there row back from `validateSessionToken`) — not by re-reading the policy definitions, and this environment's blocked network egress meant PostgreSQL's own documentation on UPDATE/DELETE-target visibility couldn't be independently re-confirmed either (`postgresql.org` returned the same `EGRESS_BLOCKED` result as `developer.paddle.com` earlier in this project). The CI failure itself is the evidence relied on here, not a docs citation. Fixed by generalizing `client.ts`'s GUC helper to set more than one GUC per transaction (`withSessionDeleteContext`), so `destroySession` now sets both — the row is visible (via `session_lookup_token`) _and_ ownership is checked (via `current_user_id`), neither weakening the other. `findOrCreateUserByGoogleIdentity`'s UPDATE path (existing-user refresh-token update) does **not** have this problem: `users`' self-access policy is `for: 'all'`, one predicate covering SELECT/INSERT/UPDATE/DELETE consistently, so `current_user_id` alone already satisfies the visibility check there — this gap is specific to a table with genuinely different GUCs per operation, which today is only `sessions`.
+
+**Worth remembering for any future table that scopes different operations against different lookup GUCs (the same pattern as `sessions`, per Flag 3's reasoning): an UPDATE or DELETE needs every GUC its SELECT policy _and_ its own policy depend on, set together in the same transaction — not just the GUC its own operation-specific policy checks.**
+
+### 5. Google's refresh token is stored now, encrypted, even though nothing reads it yet
 
 `M3-006` ("Drive file CRUD, browser-direct") needs the **browser** to hold a Google Drive access token — but the OAuth code exchange in this task happens **server-side** (a confidential client, with a real `client_secret`), so the server, not the browser, is who actually receives tokens from Google. Neither `M3-001` nor `M3-006`'s task descriptions name this hand-off explicitly, which is itself a real, if minor, gap in `docs/TASKS.md`'s task breakdown (per `CLAUDE.md`'s stop condition, "a real prerequisite not captured as a dependency" — noted here rather than silently patched over).
 
 Rather than leave a gap for `M3-006` to discover blocked, this task requests `access_type=offline` + `prompt=consent` (so Google actually issues a refresh token) and stores it encrypted on `users.google_refresh_token_encrypted` (reusing `credential-store.ts`'s AES-256-GCM functions directly — the same underlying requirement, a secret the server must read in plaintext to do its job, just per-user rather than platform-wide, so it gets its own column rather than living in `integration_credentials`). **Not built here:** the actual "give the browser a fresh Drive access token" endpoint — that's `M3-006`'s own scope. The point of storing the refresh token now is specifically so `M3-006` doesn't have to force every existing user through a second full consent screen just to backfill something this task could reasonably capture on the first pass.
 
-### 5. iOS Safari / popup-blocking: verified by construction, not against a real device
+### 6. iOS Safari / popup-blocking: verified by construction, not against a real device
 
 `M3-001`'s "done when" says "works on iOS Safari without popup-blocked failures." No `window.open`/popup API is used anywhere in this flow — `/auth/google/start` is a plain HTTP redirect (`reply.redirect(...)`), and Google's own callback is a server-side redirect back to `/auth/google/callback`, so there is no popup for Safari (or any browser) to block, by construction. This sandbox has no real iOS device to test on, same limitation `M1-011` already exists to cover for the scanning engine — noted here rather than claimed as verified on real hardware.
 
-### 6. CSRF protection is tested against a throwaway route — no real mutating business route exists yet
+### 7. CSRF protection is tested against a throwaway route — no real mutating business route exists yet
 
 `M3-002`'s "done when" asks for "a CSRF test confirms a cross-site POST is rejected." The double-submit mechanism (`apps/api/src/auth/csrf.ts` + a global `preHandler` hook, `csrf-protection.ts`) is fully built and wired into `app.ts` for every route on the instance — but the only routes that exist today are two GETs (`/auth/google/start`/`callback`) and `/health`, all exempt by method. `test/csrf-protection.test.ts` registers a one-off `POST /test/mutate` route directly on the built app purely to exercise the hook, the same pattern as testing any cross-cutting middleware in isolation before a real consumer exists. The hook itself needs no changes when the first real mutating route (`M3-003` onward) is added — it isn't route-specific.
 
-### 7. `M3-011` (the OAuth-scope CI guard) is not this task — a step toward it exists, not the guard itself
+### 8. `M3-011` (the OAuth-scope CI guard) is not this task — a step toward it exists, not the guard itself
 
 `google-oauth.test.ts` asserts `GOOGLE_OAUTH_SCOPE`'s exact literal value, which would fail CI (with a clear diff) if the scope list changed — but `M3-011`'s own description asks for something more deliberate ("fails CI if the requested OAuth scope list changes **without an explicit, reviewed diff**"), which may want a dedicated, named check rather than one assertion inside a larger test file. Left as its own future task, not marked done here, so it isn't quietly under-scoped when it's actually built.
 
-### 8. Local environment: added two new production dependencies, `@fastify/cookie` and `@fastify/cors`
+### 9. Local environment: added two new production dependencies, `@fastify/cookie` and `@fastify/cors`
 
 Chosen over hand-rolling cookie signing/parsing and CORS handling — both are official, actively-maintained Fastify-org plugins doing exactly one well-defined, security-relevant job each, the same category of dependency choice as `drizzle-orm`/`zod` already in this codebase, not a departure from its general preference for minimal dependencies. `npm audit` flags 4 moderate-severity findings after installing them, but they're entirely pre-existing (`drizzle-kit`'s own nested `esbuild`/`@esbuild-kit` dev-tooling chain, unrelated to either new package) and out of scope for this task — a known item for `M7-012`'s dependency-audit pass, not introduced here.
 
@@ -59,7 +67,7 @@ Chosen over hand-rolling cookie signing/parsing and CORS handling — both are o
 **Schema (`apps/api/src/db/schema.ts`, `apps/api/src/db/client.ts`):**
 
 - `sessions` table (token pk, userId FK, csrfToken, createdAt/expiresAt), RLS via the new `app.session_lookup_token` GUC pattern for SELECT, ordinary `current_user_id`-scoped policies for INSERT/DELETE.
-- `users.googleRefreshTokenEncrypted` (nullable bytea) — see Flag 4.
+- `users.googleRefreshTokenEncrypted` (nullable bytea) — see Flag 5.
 - `users_select_by_google_sub_lookup` — the second permissive policy from Flag 3.
 - `withGucContext` (generalized), `withSessionLookupContext`, `withGoogleSubLookupContext` in `client.ts`.
 - `provision-app-role.ts`: `app_user` granted `SELECT, INSERT, DELETE` on `sessions` (no UPDATE — nothing mutates a session row in place).
@@ -92,14 +100,16 @@ Covered in full in the Flags section above (combining the two tasks, the `users`
 
 ## Deviations from the original task descriptions
 
-- `M3-001`'s scope grew to include storing an encrypted Google refresh token — not named in its own description, but a real, necessary consequence of the server-side code exchange it does describe (see Flag 4).
-- `M3-002`'s scope grew to include the `users` RLS fix — not part of session management as literally described, but discovered _while_ building the session/account logic this task needed, and blocking without it (see Flag 3).
+- `M3-001`'s scope grew to include storing an encrypted Google refresh token — not named in its own description, but a real, necessary consequence of the server-side code exchange it does describe (see Flag 5).
+- `M3-002`'s scope grew to include the `users` and `sessions` RLS fixes — not part of session management as literally described, but discovered _while_ building the session/account logic this task needed, and blocking without it (see Flags 3–4).
 - Both tasks are reported together rather than separately (Flag 1).
 
 ## How this was tested
 
-`npx tsc --noEmit` and `npx eslint .` clean. Every `@fastify/cookie`/`@fastify/cors`/`light-my-request` API call used (`setCookie`/`unsignCookie`/`signCookie`, the `cookies` inject option, the parsed `Response.cookies` shape) was checked against that package's actual shipped `.d.ts` in `node_modules` before being relied on, not assumed from memory, specifically because the DB-dependent tests exercising them can't run in this sandbox (no local Postgres). Locally: 25 tests passing across the 3 no-DB-needed suites plus `health.test.ts`; 35 tests across 7 suites correctly skip (need CI's real Postgres) — `rls`/`templates-rls`/`seed-stock-templates` (pre-existing) plus this task's `session`/`user-account`/`auth-routes`/`csrf-protection`. `docker compose config --quiet` validates locally with the three new env vars. Real verification of every DB-dependent path — most importantly the `users`/`sessions` RLS fix from Flag 3, and the full OAuth-callback-to-session integration test — happens in CI, checked via actual GitHub check-run data before merge, per the standing rule.
+`npx tsc --noEmit` and `npx eslint .` clean throughout. Every `@fastify/cookie`/`@fastify/cors`/`light-my-request` API call used (`setCookie`/`unsignCookie`/`signCookie`, the `cookies` inject option, the parsed `Response.cookies` shape) was checked against that package's actual shipped `.d.ts` in `node_modules` before being relied on, not assumed from memory, specifically because the DB-dependent tests exercising them can't run in this sandbox (no local Postgres). Locally: 25 tests passing across the 3 no-DB-needed suites plus `health.test.ts`; 35 tests across 7 suites correctly skip (need CI's real Postgres) — `rls`/`templates-rls`/`seed-stock-templates` (pre-existing) plus this task's `session`/`user-account`/`auth-routes`/`csrf-protection`. `docker compose config --quiet` validates locally with the three new env vars.
+
+**The first CI push confirmed exactly why this couldn't be fully verified locally**: 59 of 60 tests passed against CI's real Postgres, and the one failure was Flag 4's DELETE bug — `session.test.ts`'s own "destroySession removes the row" test caught it precisely, immediately, with a clear assertion diff (expected `null`, got the still-present row). Fixed and pushed as a second commit on the same PR, re-verified green via a second real CI run before merge — the standing CI rule's exact "investigate and fix the root cause, verify the new head commit" shape, not a retry.
 
 ## Current status
 
-Code complete, locally clean. Proceeding to `npm run ci`, commit, push, PR, and CI verification (with particular attention to the `auth-routes`/`csrf-protection`/`session`/`user-account` suites — this task's real, first-time-ever exercise of RLS-governed inserts from the restricted connection) before merge.
+Code complete. First CI run: 3 of 4 jobs green immediately (gitleaks, Docker build, Playwright harness); the fourth (`Lint, typecheck, test`) caught Flag 4's real bug via `session.test.ts`, fixed in a follow-up commit, re-verified green via a second real CI run before merge — see "How this was tested."

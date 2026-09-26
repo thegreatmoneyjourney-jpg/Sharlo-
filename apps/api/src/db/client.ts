@@ -14,28 +14,38 @@ export function createAppDb(connectionString: string): PostgresJsDatabase<typeof
 }
 
 /**
- * Sets one session-local GUC (`SET LOCAL` via `set_config(..., true)`, so it
- * can never leak across pooled-connection reuse into an unrelated request)
- * for the lifetime of one transaction, then runs `fn` inside it. The GUC
- * name is passed as a bound parameter to `set_config` itself, not spliced
- * into SQL text — safe because `set_config` takes it as an ordinary text
- * argument, unlike a literal `SET LOCAL <name> = ...` statement would.
+ * Sets one or more session-local GUCs (`SET LOCAL` via `set_config(..., true)`
+ * per entry, so none can ever leak across pooled-connection reuse into an
+ * unrelated request) for the lifetime of one transaction, then runs `fn`
+ * inside it. Each GUC name is passed as a bound parameter to `set_config`
+ * itself, not spliced into SQL text — safe because `set_config` takes it as
+ * an ordinary text argument, unlike a literal `SET LOCAL <name> = ...`
+ * statement would.
  *
  * Shared by every "prove who you are via X, then act" pattern this app
  * needs (tenant identity via a validated session, a session via its raw
  * cookie token, a user account via its Google subject id before any
- * session/tenant context exists yet) — see the three named wrappers below
- * for what each one is actually for and why each is a real, separate need,
- * not three copies of the same thing.
+ * session/tenant context exists yet) — see the named wrappers below for
+ * what each one is actually for and why each is a real, separate need, not
+ * copies of the same thing. Accepts more than one GUC because Postgres RLS
+ * requires an UPDATE/DELETE target row to be visible per an applicable
+ * *SELECT*-side policy, in addition to satisfying the UPDATE/DELETE
+ * policy's own `USING` clause — for a table like `sessions`, whose SELECT
+ * and DELETE policies are deliberately scoped against *different* GUCs
+ * (see that table's own doc comment), a delete needs both set at once, or
+ * the row stays invisible and the delete silently affects zero rows (no
+ * error — this is exactly the bug `M3-001`/`M3-002`'s report documents
+ * finding via a real, CI-caught test failure, not a documentation read).
  */
 async function withGucContext<T>(
   db: PostgresJsDatabase<typeof schema>,
-  gucName: string,
-  gucValue: string,
+  gucs: Record<string, string>,
   fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config(${gucName}, ${gucValue}, true)`);
+    for (const [gucName, gucValue] of Object.entries(gucs)) {
+      await tx.execute(sql`select set_config(${gucName}, ${gucValue}, true)`);
+    }
     return fn(tx as unknown as PostgresJsDatabase<typeof schema>);
   });
 }
@@ -46,7 +56,7 @@ export async function withTenantContext<T>(
   userId: string,
   fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
 ): Promise<T> {
-  return withGucContext(db, 'app.current_user_id', userId, fn);
+  return withGucContext(db, { 'app.current_user_id': userId }, fn);
 }
 
 /**
@@ -61,7 +71,28 @@ export async function withSessionLookupContext<T>(
   token: string,
   fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
 ): Promise<T> {
-  return withGucContext(db, 'app.session_lookup_token', token, fn);
+  return withGucContext(db, { 'app.session_lookup_token': token }, fn);
+}
+
+/**
+ * Deleting a session needs *both* GUCs at once: `session_lookup_token` so
+ * the row is visible at all (Postgres's DELETE-target visibility check —
+ * see `withGucContext`'s own comment for why this is required, found via a
+ * real test failure, not assumed), and `current_user_id` so the delete
+ * policy's own ownership check (only the session's own user may remove it)
+ * still applies on top, not weakened by adding the first GUC.
+ */
+export async function withSessionDeleteContext<T>(
+  db: PostgresJsDatabase<typeof schema>,
+  userId: string,
+  token: string,
+  fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
+): Promise<T> {
+  return withGucContext(
+    db,
+    { 'app.session_lookup_token': token, 'app.current_user_id': userId },
+    fn,
+  );
 }
 
 /**
@@ -83,5 +114,5 @@ export async function withGoogleSubLookupContext<T>(
   googleSub: string,
   fn: (tx: PostgresJsDatabase<typeof schema>) => Promise<T>,
 ): Promise<T> {
-  return withGucContext(db, 'app.google_sub_lookup', googleSub, fn);
+  return withGucContext(db, { 'app.google_sub_lookup': googleSub }, fn);
 }
