@@ -58,4 +58,9 @@ export async function ensureAppRole(sql: Sql, password: string): Promise<void> {
 export async function grantAppRolePrivileges(sql: Sql): Promise<void> {
   await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON users TO app_user`;
   await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON templates TO app_user`;
+  // No DELETE: nothing in this app ever removes a stored integration
+  // credential, only overwrites it (`credential-store.ts`'s upsert) — a
+  // narrower grant than the other tables', matching that actual access
+  // pattern rather than granting privilege "just in case."
+  await sql`GRANT SELECT, INSERT, UPDATE ON integration_credentials TO app_user`;
 }

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  customType,
   integer,
   jsonb,
   pgPolicy,
@@ -10,6 +11,15 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+
+// drizzle-orm/pg-core has no built-in `bytea` column helper (unlike jsonb,
+// text, etc.) — this is the documented way to declare one: a `customType`
+// mapping directly to Postgres's own `bytea`, in/out as a Node `Buffer`.
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 /**
  * Minimal `users` table per ARCHITECTURE.md §6 — the M0-006 proof-of-concept
@@ -157,3 +167,38 @@ export const templates = pgTable(
       .where(sql`${table.isStock} = true`),
   ],
 ).enableRLS();
+
+/**
+ * M0-010 / ADR-0017 — every third-party integration secret (Resend, Paddle,
+ * Bank Alfalah, the ADR-0016 AI provider, Google OAuth's client secret, any
+ * future one) lives here, encrypted, instead of a hardcoded env var that'd
+ * need a redeploy to rotate. `encryptedValue` is AES-256-GCM ciphertext —
+ * see `../integrations/credential-store.ts` for the encrypt/decrypt helpers
+ * and the *one* secret that's still a real env var on purpose (the envelope
+ * key protecting this table, which is standard envelope-encryption practice,
+ * not a violation of the ADR's own goal — see that file's module comment).
+ *
+ * Deliberately **not** RLS-enabled. RLS in this codebase (see `users`,
+ * `templates` above) enforces *per-tenant* row isolation via
+ * `app.current_user_id`; this table isn't tenant-scoped data at all — it's
+ * platform-level configuration no teacher-facing request should ever reach,
+ * scoped instead at the application layer: only the credential-store
+ * helper module reads/writes it, and no teacher-facing route is ever wired
+ * to touch it. `updatedBy` is nullable (a bootstrap/CLI write, `M0-010`'s
+ * "minimal write path," has no acting admin user yet — `M5-012`'s admin UI
+ * is what populates it going forward).
+ */
+export const integrationCredentials = pgTable(
+  'integration_credentials',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(), // 'resend' | 'paddle' | 'bank_alfalah' | 'ai_support' | 'google_oauth' | ...
+    keyName: text('key_name').notNull(), // e.g. 'api_key', 'client_id', 'client_secret', 'webhook_secret'
+    encryptedValue: bytea('encrypted_value').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by').references(() => users.id),
+  },
+  (table) => [
+    uniqueIndex('integration_credentials_provider_key_unique').on(table.provider, table.keyName),
+  ],
+);

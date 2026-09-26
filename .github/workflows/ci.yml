@@ -125,5 +125,6 @@ jobs:
           POSTGRES_USER: ci_check
           POSTGRES_PASSWORD: ci_check
           APP_DB_ROLE_PASSWORD: ci_check
+          INTEGRATION_CREDENTIALS_KEY: ci_check
           APP_DOMAIN: ci-check.example.com
           API_DOMAIN: ci-check-api.example.com
