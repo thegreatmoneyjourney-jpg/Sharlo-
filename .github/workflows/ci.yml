@@ -80,6 +80,26 @@ jobs:
         run: npm run test:e2e
         working-directory: apps/web
 
+  secret-scanning:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans commit history, not just the checked-out tree —
+          # a shallow clone would hide a secret committed and later
+          # deleted, which is exactly the case this check exists to catch.
+          fetch-depth: 0
+
+      # M0-013 (docs/reports/SHARLO-M0-014.md, Addendum 5): free,
+      # open-source secret scanning on every push/PR, not just a one-time
+      # pre-launch pass — catches a credential accidentally committed
+      # anywhere in history, including Addendum 5's own explicit ask.
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   docker-build:
     name: Docker images build
     runs-on: ubuntu-latest
