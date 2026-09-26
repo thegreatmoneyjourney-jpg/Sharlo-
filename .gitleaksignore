@@ -1,0 +1,9 @@
+# M0-010 (docs/reports/SHARLO-M0-010.md, Flag 4): a fake, non-functional
+# test-fixture value ('sk_live_abc123') that matched the generic-api-key
+# pattern closely enough to be flagged. It was never a real secret — a
+# later commit on the same PR replaced it with a natural-language
+# placeholder — but full-history scanning (fetch-depth: 0, by design)
+# still sees it in this earlier commit's own diff, permanently. Reviewed
+# and confirmed harmless; this line suppresses only this exact historical
+# finding, not the rule or file generally.
+ed7e3096e7821c63cd8b5addc1d593366cb93297:apps/api/test/integration-credentials.test.ts:generic-api-key:42
