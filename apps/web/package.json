@@ -16,6 +16,7 @@
     "generate:stock-templates": "node scripts/run-generate-stock-templates.mjs"
   },
   "dependencies": {
+    "libsodium-wrappers-sumo": "^0.8.4",
     "next": "16.3.6",
     "pdfjs-dist": "6.3.289",
     "react": "19.2.8",

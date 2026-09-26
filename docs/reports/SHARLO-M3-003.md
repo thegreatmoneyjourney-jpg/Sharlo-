@@ -1,0 +1,84 @@
+# SHARLO-M3-003 — Master key generation & wrapping
+
+**Status: done.** FR-AUTH-03/04/05/07 implemented end to end (client-side crypto, session-authenticated API persistence, and a real, working onboarding/change-passphrase UI at `/settings`), with the founder's Addendum 6 rigor requirements — established libraries only, all three recovery paths directly tested, the negative path directly tested, and the Recovery Key onboarding UX built now rather than deferred — each satisfied and called out explicitly below.
+
+## Flags
+
+None of these are blockers under the stop-conditions in `CLAUDE.md` (no plaintext-student-data-on-server issue, no ADR conflict, no scope ambiguity that changes what's in/out of launch scope) — they're judgment calls made along the way, disclosed per this project's established norm rather than silently decided.
+
+1. **Argon2id cost tier: MODERATE, not SENSITIVE — a documented engineering call, not a founder check-in.** The founder's Addendum 6 instruction was "use established libraries, don't hand-roll crypto," which this satisfies (MODERATE is one of libsodium's own named tiers, not a hand-tuned number). The specific _tier_ choice was mine to make and is fully reasoned in `apps/web/lib/crypto/argon2id.ts`'s doc comment: `docs/SRS.md` NFR-PERF-01 pins the reference device at 4GB RAM; SENSITIVE's ~1GiB memlimit leaves too little headroom on that class of device once the browser's own baseline heap and (on this app specifically) OpenCV.js's WASM heap are accounted for, and an OOM crash during signup or — far worse — a recovery attempt is a worse failure mode than "very strong but not maximal" KDF cost. Flagging this so the founder can override with a real number if 4GB was meant as a floor rather than a target; nothing about the design requires this specific value, and it's a one-line change if a future real-device pilot (in the spirit of `M1-011`) shows it's wrong.
+2. **`/settings` is used for both first-time setup and returning-user passphrase-change, and is now the OAuth callback's unconditional post-login redirect target.** `docs/ARCHITECTURE.md`'s original route map already names `/settings` as "account, encryption passphrase, recovery key, billing" — this task builds the encryption slice of that page, not the whole hub (no account/billing sections exist yet, nor do they need to for this task). No other authenticated page exists yet in this codebase, so redirecting every successful sign-in here (rather than, say, a dashboard) is the only thing that makes sense today; the page self-determines setup-vs-change mode from `GET /account/encryption-params` rather than the callback branching on it, so this doesn't need to change again once a real dashboard exists — only the redirect target does.
+3. **The passphrase strength meter (`lib/crypto/passphrase-strength.ts`) is a simple length+variety heuristic, not a rigorous entropy estimate.** FR-AUTH-04 only requires "a strength meter shown," not a specific algorithm. A library like zxcvbn exists for real entropy estimation but is a meaningfully heavier dependency (a large wordlist) for a v1 UX nudge; this heuristic is honest about being a nudge, not the security boundary (Argon2id is what actually protects the wrapped key against a weak passphrase). Easy to swap later if the founder wants a stronger meter.
+4. **`recovery_key_verifier`'s exact algorithm was a genuine, pre-existing spec gap** — `docs/ARCHITECTURE.md`'s schema sketch names the column ("verifier hash, not the key itself") but never specifies what hash. Implemented as a plain SHA-256 digest of the Recovery Key, explicitly documented in `recovery-key.ts` as a fast "does this look right" UX check only, never the actual security boundary — that boundary is AES-GCM's own authenticated-decryption rejection, which doesn't depend on this field at all. Judged low-stakes enough to decide rather than stop and ask (unlike the core recovery mechanics, which ADR-0005 already specifies precisely).
+5. **Recovery Key _rotation_ primitive built, but not wired up — that's `M3-004`'s scope.** `master-key.ts` exports `rewrapMasterKeyByNewRecoveryKey(masterKey)`, fully tested (including that it actually invalidates the old key, not just adds a second valid one). No server endpoint or reminder-cadence UI calls it yet. See "Handoff to M3-004" below for why "rotate" rather than "re-display" is the only thing this can mean.
+6. **A real, somewhat surprising TypeScript ecosystem gap surfaced while writing this module**: TypeScript 5.7+ made `Uint8Array` generic over its backing buffer type, and current DOM lib types (`BufferSource`) only accept the concrete `Uint8Array<ArrayBuffer>` form — a bare `Uint8Array` annotation no longer satisfies `crypto.subtle`'s signatures. Fixed with a shared `Bytes = Uint8Array<ArrayBuffer>` alias (`encoding.ts`) used throughout `lib/crypto/`, and a defensive copy (`new Uint8Array(...)`, not a cast) at the two points where libsodium's own `.d.ts` — which predates this TS change — still returns the wider type. Recorded in `CLAUDE.md` so a future session doesn't re-diagnose this from scratch.
+7. **No new database migration was needed.** `users`' wrapped-key/KDF/verifier/reminder columns were already provisioned during `M3-001` (ADR-0005 groundwork laid ahead of time). This task only added the code that reads and writes them.
+
+## What was built
+
+**Client-side crypto (`apps/web/lib/crypto/`)** — the only place any actual key material exists, ever, per ADR-0005/§5's "the backend never receives master keys or wrapping keys":
+
+- `encoding.ts` — hex encode/decode (chosen over base64 everywhere in this module: no padding/URL-unsafe characters, simplest possible round-trip, lowest bug-risk for something as consequential as a Recovery Key a teacher may retype by hand); the `Bytes` type alias.
+- `argon2id.ts` — lazy-loaded (`import()`, not a `<script>` tag — this package is small with a proper ESM build, unlike OpenCV.js) Argon2id KDF via `libsodium-wrappers-sumo`. MODERATE cost tier (see Flag 1). Versioned `Argon2idParams` (not raw numbers) so a future cost-parameter or algorithm change can still unwrap old records.
+- `aes-gcm.ts` — AES-256-GCM wrap/unwrap via native WebCrypto only, zero third-party library or custom cipher logic. Output layout `iv || ciphertext+authTag`. Decryption is authenticated: a wrong key or tampered ciphertext throws, it never returns partial/corrupted plaintext — this is the primitive-level guarantee the founder's negative-path requirement rests on.
+- `recovery-key.ts` — Recovery Key generation (raw `crypto.getRandomValues()` output, used directly as the AES key — no KDF, since it's already full-strength 256-bit entropy and a KDF would only add latency, not security), hyphen-grouped hex display encoding/decoding, and the verifier hash (Flag 4).
+- `passphrase-strength.ts` — the FR-AUTH-04 strength meter (Flag 3).
+- `master-key.ts` — orchestration: `setupEncryption` (signup), `unwrapMasterKeyByPassphrase`, `unwrapMasterKeyByRecoveryKey`, `rewrapMasterKeyByNewPassphrase` (FR-AUTH-07), `rewrapMasterKeyByNewRecoveryKey` (Flag 5). Every sensitive buffer (master key, wrapping keys, the Recovery Key) is best-effort zeroed (`.fill(0)`) once no longer needed.
+
+**API (`apps/api/`)** — stores and returns only ciphertext, salts, and a KDF-params object it never interprets:
+
+- `auth/request-session.ts` — added `requireSession`, the first real session-authenticated route helper beyond the OAuth handshake itself.
+- `auth/account-encryption.ts` — `getEncryptionParams`, `setupAccountEncryption` (throws `EncryptionAlreadySetUpError` on a second attempt — this must be a one-time operation, or a race/bug could silently orphan previously-encrypted data with no recovery path), `changeAccountPassphrase` (throws `EncryptionNotSetUpError` if called too early; touches only the 3 passphrase-path fields, never the recovery wrap).
+- `routes/encryption.ts` — `GET /account/encryption-params`, `POST /account/encryption-setup`, `POST /account/encryption-passphrase`. Zod-validated (hex-shaped strings, a loosely-typed KDF-params object so a future KDF migration doesn't need an API redeploy just to accept a new algorithm tag). Covered by the existing global CSRF double-submit hook automatically — no new wiring needed for that.
+- `routes/auth.ts` — OAuth callback now redirects to `${appBaseUrl}/settings` (Flag 2); `auth-routes.test.ts` updated to match.
+
+**Web UI (`apps/web/app/(app)/settings/`)**:
+
+- `page.tsx` + `settings-client.tsx` — a real, working page, not a stub. Fetches encryption state on mount; a brand-new account sees the setup flow (passphrase + strength meter → generate keys → Recovery Key screen with a **forced** confirmation checkbox gating "Continue", a download-as-text-file button, and prominent, non-dismissible "lose both = unrecoverable" messaging — FR-AUTH-05/08, not a one-liner); a returning account sees the change-passphrase form (current passphrase → unwrap client-side → new passphrase → re-wrap → persist).
+- `apps/web/lib/api/account-encryption-client.ts` — thin fetch wrappers, `credentials: 'include'`, echoes the CSRF cookie as a header on mutating calls.
+- Infra: `NEXT_PUBLIC_API_BASE_URL` — new `.env.example` entry, and (this matters — see Flag/CLAUDE.md item 7) a Dockerfile build ARG + `docker-compose.yml` `build.args` entry, not a runtime `environment:` entry, since Next.js inlines `NEXT_PUBLIC_*` vars at build time.
+
+## Key decisions
+
+- **Library choice, per the founder's explicit mandate**: `libsodium-wrappers-sumo` for Argon2id (compiled via Emscripten from the same C source as the original libsodium, maintained by libsodium's own original author; the "sumo" variant specifically because the base package excludes `crypto_pwhash`) + native WebCrypto for AES-256-GCM (browser-vendor-implemented, audited by definition). No hand-rolled cryptographic logic anywhere — every file's doc comment says so explicitly and means it literally: `aes-gcm.ts` "contains zero actual cipher logic."
+- **Argon2id MODERATE tier** — see Flag 1.
+- **Recovery Key: raw entropy, no KDF, hex-encoded with hyphen grouping** — see "What was built."
+- **`setupAccountEncryption` is one-time; `changeAccountPassphrase` requires it to already exist** — two explicit state machines enforced server-side, not just client-side convention, because the consequence of getting this wrong (silently re-generating/overwriting wrapped key material) is unrecoverable data loss.
+- **`/settings` as the unconditional post-login landing page** — see Flag 2.
+
+## Deviations from the original task description
+
+The task row only said "generate random master key at signup; Encryption Passphrase + Argon2id wrap; Recovery Key generation and second wrap." Two things were added beyond that literal scope, both because the founder's Addendum 6 message explicitly asked for them:
+
+1. **The full onboarding UI** (forced Recovery Key confirmation, strength meter, download) — Addendum 6: "Recovery Key must be strongly surfaced at signup... note in this task's report how the UI hands off to that reminder system" (see next section). Without this, FR-AUTH-05 (also one of this task's own listed requirement IDs) wouldn't actually be satisfied.
+2. **The session-authenticated API routes and `requireSession` helper** — the task description only mentions client-side generation/wrapping, but ADR-0005 requires the wrapped ciphertext to be persisted server-side, and there was no existing authenticated route to persist it through. Building this was necessary to make the task's own "done when" criterion (sign up, change passphrase, confirm prior data untouched) testable against something real rather than only unit-testing the crypto functions in isolation.
+
+Nothing was silently narrowed or dropped. `M3-004`'s own scope (the 7-/30-day reminder cadence, the "unmissable" messaging _polish_, `FR-AUTH-08`'s dedicated documentation) was deliberately left to that task — see next section.
+
+## Handoff to M3-004 (Recovery Key reminder cadence)
+
+Per the founder's explicit instruction to document this even though the reminder-_sending_ itself is out of scope here: `ADR-0005`'s addendum describes the 7-/30-day re-confirmation as "re-download the Recovery Key and confirm." Because neither the server nor the client retains the original raw Recovery Key after initial wrapping (true zero-knowledge design — only ciphertext and a verifier hash are ever stored), **"re-confirm the same key" is not literally possible** — the only thing a reminder flow can actually do is issue a _brand-new_ Recovery Key and re-wrap the master key with it, discarding the old wrapped blob so the old key stops working.
+
+This task builds and tests exactly that reusable primitive (`rewrapMasterKeyByNewRecoveryKey` in `master-key.ts`) — confirmed to (a) produce a new key that independently unwraps to the same master key, and (b) actually invalidate the old key against the new wrapped blob, not just add a second valid one. `M3-004` still owns: the actual 7-/30-day scheduled job, the in-app banner, the transactional email (depends on `M0-008`), the API endpoint that calls this primitive, and the UI that calls that endpoint. None of that exists yet — this task deliberately stops at the tested, reusable building block.
+
+## How it was tested — the founder's explicit rigor requirements
+
+All of the following were run against real code, not assumed from the design "looking symmetric":
+
+**1. Master key correctly unwraps via the Encryption Passphrase** (`master-key.test.ts`, "recovery path 1"): `setupEncryption` → `unwrapMasterKeyByPassphrase` recovers the exact original master key bytes (proven via a round-trip re-wrap/re-unwrap under a second passphrase, not just "didn't throw").
+
+**2. Master key correctly unwraps via the Recovery Key alone, simulating a forgotten passphrase — "the path that matters most"** (`master-key.test.ts`, "recovery path 2"): a dedicated test goes straight from `setupEncryption`'s output to `unwrapMasterKeyByRecoveryKey`, **never calling the passphrase-unwrap function at all**, and cross-checks the result against the passphrase path's own recovered key to prove both wraps protect the identical master key. A second test confirms this still works after a teacher retypes the key with different case/spacing.
+
+**3. Changing the passphrase re-wraps the master key without needing to re-encrypt any underlying data** (`master-key.test.ts`, "recovery path 3"): confirms (a) the _same_ master key survives a passphrase change, (b) the Recovery Key wrap is completely untouched and still independently unwraps to the identical key, and (c) the _old_ passphrase no longer works against the new stored blob (proving a real replacement, not just an additional valid credential) — all three asserted directly, not assumed from the design.
+
+**4. Negative path: wrong passphrase and no Recovery Key provided fails cleanly and safely, never partially decrypts or produces corrupted output** (`master-key.test.ts` + `aes-gcm.test.ts`): a wrong passphrase, a well-formed-but-wrong Recovery Key, and a tampered ciphertext blob all reject outright (`rejects.toThrow()`), and a dedicated test additionally asserts the failure path never leaves behind an assigned plaintext-shaped value (catches the failure, then asserts the variable is still `undefined`) — not just that a `catch` block was reachable in principle.
+
+Plus: the Recovery Key rotation primitive's own invalidation property, hex round-tripping (including malformed/garbled input), Argon2id determinism and cost-tier verification (against the library's own named constants, not hardcoded numbers), AES-GCM IV uniqueness per call, and the full API layer (authorization, CSRF, one-time/already-set-up state gating, exact persistence round-tripping) against a real local Postgres instance (this environment has a real `postgresql-16` package installed and reachable, unlike the Docker-daemon-less state noted in earlier reports — used directly rather than skipped).
+
+Also verified directly, not just typechecked: a real `next build` production build succeeds and lists `/settings` as a generated static route; `npm run ci`-equivalent (typecheck + lint + full test suite) is green on both `apps/web` and `apps/api`.
+
+**Totals**: 44 new crypto-module tests (`apps/web/lib/crypto/`), 9 new API integration tests (`apps/api/test/encryption-routes.test.ts`) against real Postgres, 5 new API-client tests, 5 new settings-page component tests — all passing, alongside the full pre-existing suite (348 web tests, 69 API tests) staying green.
+
+## Current status
+
+Done. Both `docker-compose.yml`/`Dockerfile` and the actual crypto/API/UI code are consistent and verified (the build-ARG fix was caught and corrected during this task, not left as a latent production bug). Ready for `npm run ci`, commit, push, and the PR/CI/merge cycle.

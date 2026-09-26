@@ -140,7 +140,13 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
           maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
         });
 
-      return reply.redirect(opts.appBaseUrl);
+      // `/settings` is the only authenticated page that exists yet
+      // (M3-003) — it self-determines setup-vs-change mode from its own
+      // `GET /account/encryption-params` call, so a brand-new sign-in and
+      // a returning one land in the same place correctly without this
+      // route needing to know which one just happened. Revisit once a
+      // real post-login dashboard exists (M3-006 onward).
+      return reply.redirect(`${opts.appBaseUrl}/settings`);
     },
   );
 }

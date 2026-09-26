@@ -1,4 +1,4 @@
-import type { FastifyRequest } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type * as schema from '../db/schema.js';
 import { validateSessionToken, type SessionRecord } from './session.js';
@@ -26,4 +26,25 @@ export async function getRequestSession(
     return null;
   }
   return validateSessionToken(db, unsigned.value);
+}
+
+/**
+ * `getRequestSession`, plus the 401 a route should send on a missing/
+ * invalid session — the first consumer being `../routes/encryption.ts`
+ * (`M3-003`), the first real session-authenticated route this app has
+ * beyond the OAuth handshake itself. A route calls this once at the top
+ * and returns immediately when it gets `null` back; the reply has already
+ * been sent in that case.
+ */
+export async function requireSession(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  db: PostgresJsDatabase<typeof schema>,
+): Promise<SessionRecord | null> {
+  const session = await getRequestSession(req, db);
+  if (!session) {
+    await reply.code(401).send({ error: 'unauthenticated' });
+    return null;
+  }
+  return session;
 }
