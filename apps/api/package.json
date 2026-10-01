@@ -13,7 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed-templates": "tsx src/db/seed-stock-templates.ts",
-    "db:set-credential": "tsx src/db/set-credential.ts"
+    "db:set-credential": "tsx src/db/set-credential.ts",
+    "check-oauth-scope": "node scripts/check-oauth-scope.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
