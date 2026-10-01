@@ -17,6 +17,7 @@ import { applyReadResult } from './exam-scan-mode';
 import type { Mode } from './exam-scan-mode';
 import { detectAndReadSheet } from '@/lib/scanning/read-sheet-from-image';
 import { loadImageFile } from '@/lib/scanning/load-image-file';
+import { normalizeRollNumber } from '@/lib/roster/roster';
 import {
   advanceBatch,
   buildBatchQueue,
@@ -65,10 +66,13 @@ const RETENTION_CHECK_INTERVAL_MS = 30 * 1000;
  */
 export function ExamScanFlow({
   geometry,
+  roster,
   onRestart,
 }: {
   examTitle: string;
   geometry: TemplateGeometry;
+  /** `M3-007` (`FR-ROSTER-02`) — normalized roll number -> student name for the class this exam was set up with, or `null` when the teacher skipped rostering. Must be referentially stable across re-renders (`useMemo`d by the caller) — see `use-sheet-reader.ts`'s own doc note on why a fresh `Map` every render would be wasteful. */
+  roster: ReadonlyMap<string, string> | null;
   onRestart: () => void;
 }) {
   const [openCvReady, setOpenCvReady] = useState(false);
@@ -92,7 +96,7 @@ export function ExamScanFlow({
         : manualCapture.capturedFrame
       : (autoCapture.capturedFrame ?? manualCapture.capturedFrame);
 
-  const readResult = useSheetReader(capturedFrame, geometry);
+  const readResult = useSheetReader(capturedFrame, geometry, roster);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,7 +158,7 @@ export function ExamScanFlow({
         ]);
         if (cancelled) return;
 
-        const detected = detectAndReadSheet(cv, loaded.imageData, geometry);
+        const detected = detectAndReadSheet(cv, loaded.imageData, geometry, roster);
         if (detected.status === 'no-markers-detected') {
           failure = { label: item.label, reason: NO_SHEET_DETECTED_REASON };
         } else {
@@ -182,7 +186,7 @@ export function ExamScanFlow({
     return () => {
       cancelled = true;
     };
-  }, [batch, mode, geometry]);
+  }, [batch, mode, geometry, roster]);
 
   async function handleFilesPicked(fileList: FileList) {
     const files = Array.from(fileList);
@@ -238,14 +242,16 @@ export function ExamScanFlow({
     });
   }
 
+  /** `M3-007` (`FR-ROSTER-02`): a manual correction is itself just another roll-number value, so it gets the identical roster lookup a scanned read would have gotten — a teacher fixing a misread number sees the matched name immediately, not just the corrected digits. */
   function resolveRollNumberItem(
     item: Extract<ReviewQueueItem, { kind: 'roll-number' }>,
     rollNumber: string,
   ) {
+    const name = roster?.get(normalizeRollNumber(rollNumber)) ?? null;
     setMode((prev) => {
       if (prev.phase !== 'scan-students') return prev;
       const students = prev.students.map((student) =>
-        student.id === item.studentId ? { ...student, rollNumber } : student,
+        student.id === item.studentId ? { ...student, rollNumber, name } : student,
       );
       return {
         ...prev,
@@ -368,9 +374,11 @@ export function ExamScanFlow({
                 role="status"
               >
                 <span className="text-xs text-zinc-300">
-                  {lastStudent.rollNumber
-                    ? `Roll #${lastStudent.rollNumber}`
-                    : 'Roll number not read'}
+                  {lastStudent.name
+                    ? `${lastStudent.name} (Roll #${lastStudent.rollNumber})`
+                    : lastStudent.rollNumber
+                      ? `Roll #${lastStudent.rollNumber}`
+                      : 'Roll number not read'}
                 </span>
                 <span className="text-lg font-semibold">
                   {lastStudent.scored.correctCount} / {gradedCount}

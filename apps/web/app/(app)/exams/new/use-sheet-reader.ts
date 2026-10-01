@@ -35,6 +35,7 @@ export type { ReviewCropItem, SheetReadOutcome } from '@/lib/scanning/read-sheet
 export function useSheetReader(
   capturedFrame: CapturedFrame | null,
   geometry: TemplateGeometry | null,
+  rosterLookup: ReadonlyMap<string, string> | null = null,
 ): SheetReadOutcome | null {
   const [outcome, setOutcome] = useState<SheetReadOutcome | null>(null);
 
@@ -49,6 +50,7 @@ export function useSheetReader(
         capturedFrame.imageData,
         capturedFrame.corners,
         geometry,
+        rosterLookup,
       );
       if (result && !cancelled) setOutcome(result);
     });
@@ -56,7 +58,10 @@ export function useSheetReader(
     return () => {
       cancelled = true;
     };
-  }, [capturedFrame, geometry]);
+    // `rosterLookup` must be a referentially-stable value across renders
+    // (e.g. `useMemo`d by the caller) — a fresh `Map` instance every render
+    // would re-run this effect (and re-read the whole sheet) needlessly.
+  }, [capturedFrame, geometry, rosterLookup]);
 
   return capturedFrame ? outcome : null;
 }

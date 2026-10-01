@@ -40,12 +40,7 @@ describe('buildReviewItemSpecs', () => {
       questions: allAnswered(20),
       rollNumberColumns: [{ outcome: 'answered', optionIndex: 4 }],
     };
-    const items = buildReviewItemSpecs(
-      readResult,
-      MAPPED,
-      { status: 'read', value: '4' },
-      FRAME_SIZE,
-    );
+    const items = buildReviewItemSpecs(readResult, MAPPED, null, FRAME_SIZE);
     expect(items).toEqual([]);
   });
 
@@ -58,25 +53,33 @@ describe('buildReviewItemSpecs', () => {
       rollNumberColumns: [{ outcome: 'answered', optionIndex: 4 }],
     };
 
-    const items = buildReviewItemSpecs(
-      readResult,
-      MAPPED,
-      { status: 'read', value: '4' },
-      FRAME_SIZE,
-    );
+    const items = buildReviewItemSpecs(readResult, MAPPED, null, FRAME_SIZE);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({ kind: 'question', questionNumber: 5 });
     expect(items[1]).toMatchObject({ kind: 'question', questionNumber: 10 });
   });
 
-  it('adds a roll-number item when the roll number is unreadable', () => {
+  it('adds a roll-number item with reason "unread" when the roll number is unreadable', () => {
     const readResult: ReadAnswerSheetResult = {
       questions: allAnswered(20),
       rollNumberColumns: [{ outcome: 'blank' }],
     };
-    const items = buildReviewItemSpecs(readResult, MAPPED, { status: 'unreadable' }, FRAME_SIZE);
-    expect(items).toEqual([{ kind: 'roll-number', cropRect: expect.any(Object) }]);
+    const items = buildReviewItemSpecs(readResult, MAPPED, { reason: 'unread' }, FRAME_SIZE);
+    expect(items).toEqual([
+      { kind: 'roll-number', reason: 'unread', cropRect: expect.any(Object) },
+    ]);
+  });
+
+  it('adds a roll-number item with reason "unmatched" when the roll number was read but didn\'t match a roster', () => {
+    const readResult: ReadAnswerSheetResult = {
+      questions: allAnswered(20),
+      rollNumberColumns: [{ outcome: 'answered', optionIndex: 4 }],
+    };
+    const items = buildReviewItemSpecs(readResult, MAPPED, { reason: 'unmatched' }, FRAME_SIZE);
+    expect(items).toEqual([
+      { kind: 'roll-number', reason: 'unmatched', cropRect: expect.any(Object) },
+    ]);
   });
 
   it('a flagged question and an unreadable roll number on the same sheet both appear', () => {
@@ -86,7 +89,7 @@ describe('buildReviewItemSpecs', () => {
       questions,
       rollNumberColumns: [{ outcome: 'flagged' }],
     };
-    const items = buildReviewItemSpecs(readResult, MAPPED, { status: 'unreadable' }, FRAME_SIZE);
+    const items = buildReviewItemSpecs(readResult, MAPPED, { reason: 'unread' }, FRAME_SIZE);
     expect(items.map((i) => i.kind)).toEqual(['question', 'roll-number']);
   });
 });

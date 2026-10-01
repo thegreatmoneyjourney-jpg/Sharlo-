@@ -17,9 +17,11 @@
  */
 
 import type { ReadAnswerSheetResult } from './read-answer-sheet';
-import type { RollNumberReadResult } from './roll-number';
 import type { MappedBubble, MappedTemplateGeometry } from '../templates/map-geometry-to-frame';
 import type { NormalizedSize } from './perspective-transform';
+
+/** Why the roll-number block needs review — mirrors `lib/roster/roster.ts`'s `RosterMatchOutcome` reasons without importing that module: this stays a plain, product-model-agnostic value so `review-queue.ts` (an `M1`/`M2`-era module older than rostering) never has to know `lib/roster/` exists. The caller (`read-sheet-from-image.ts`, already the integration layer) is the one place that resolves a real roster match into this shape. */
+export type RollNumberReviewReason = 'unread' | 'unmatched';
 
 export interface CropRect {
   left: number;
@@ -54,21 +56,28 @@ export function boundingCropRect(
 
 export type ReviewItemSpec =
   | { kind: 'question'; questionNumber: number; cropRect: CropRect }
-  | { kind: 'roll-number'; cropRect: CropRect };
+  | { kind: 'roll-number'; reason: RollNumberReviewReason; cropRect: CropRect };
 
 /**
- * `rollRead` only ever contributes a `'roll-number'` item for
- * `status: 'unreadable'` — not for a read-but-not-on-the-roster case
- * (`matchRollNumber`'s `'unmatched'`), because no roster/class-list data
- * model exists anywhere in this codebase yet (a later milestone's job).
- * Wiring that in is a small, additive follow-up once rostering exists,
- * not a redesign of this function — flagged in `docs/reports/
- * SHARLO-M2-006.md` rather than silently assumed covered.
+ * `M3-007` (`FR-ROSTER-02`, `FR-DETECT-04`): `rollNumberReview` is `null`
+ * when the roll number needs no review at all — either it matched a
+ * roster entry, or no roster was selected for this exam and the read
+ * value is simply accepted as-is (rostering is opt-in, never a
+ * precondition for scanning). Otherwise it carries *why* review is
+ * needed (`'unread'`: the grid itself couldn't be read; `'unmatched'`:
+ * read cleanly, but no roster entry matches it) so the review-queue UI
+ * can show a reason-specific message instead of one generic "roll
+ * number" label. This closes the "small, additive follow-up once
+ * rostering exists" this function's own doc comment previously flagged
+ * (`docs/reports/SHARLO-M2-006.md`) — the caller (`read-sheet-from-image.ts`)
+ * is what actually resolves a roster match into this plain shape, so
+ * this function itself still never needs to know a roster data model
+ * exists.
  */
 export function buildReviewItemSpecs(
   readResult: ReadAnswerSheetResult,
   mappedGeometry: MappedTemplateGeometry,
-  rollRead: RollNumberReadResult,
+  rollNumberReview: { reason: RollNumberReviewReason } | null,
   frameSize: NormalizedSize,
 ): ReviewItemSpec[] {
   const items: ReviewItemSpec[] = [];
@@ -84,10 +93,11 @@ export function buildReviewItemSpecs(
     });
   });
 
-  if (rollRead.status === 'unreadable' && mappedGeometry.rollNumberColumns.length > 0) {
+  if (rollNumberReview && mappedGeometry.rollNumberColumns.length > 0) {
     const allRollOptions = mappedGeometry.rollNumberColumns.flatMap((c) => c.options);
     items.push({
       kind: 'roll-number',
+      reason: rollNumberReview.reason,
       cropRect: boundingCropRect(allRollOptions, mappedGeometry.bubbleRadiusPx, frameSize),
     });
   }

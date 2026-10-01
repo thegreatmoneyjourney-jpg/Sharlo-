@@ -9,6 +9,8 @@ import type { ReviewQueueItem } from './review-queue-panel';
 export interface StudentResult {
   id: number;
   rollNumber: string | null;
+  /** `M3-007` (`FR-ROSTER-02`) — the matched roster entry's name, or `null` when no roster was selected for this exam, the roll number didn't match one, or it couldn't be read at all. Never guessed or left silently blank without one of those three explicit reasons. */
+  name: string | null;
   scored: ScoredSheet;
 }
 
@@ -91,8 +93,18 @@ export function applyReadResult(
   if (prev.pendingDuplicate) return prev;
 
   const rollNumber = readResult.rollRead.status === 'read' ? readResult.rollRead.value : null;
+  // M3-007 (FR-ROSTER-02): `rollNumberMatch` was already resolved once, in
+  // `readSheetFromCorners`, against whichever roster (if any) this exam
+  // was set up with — never recomputed here, so there's exactly one place
+  // that decides a match.
+  const rollNumberReviewReason = readResult.rollNumberMatch.needsReview
+    ? readResult.rollNumberMatch.reason
+    : null;
+  const name = readResult.rollNumberMatch.needsReview
+    ? null
+    : readResult.rollNumberMatch.studentName;
   const scored = scoreSheet(readResult.result.questions, prev.key);
-  const newStudent: StudentResult = { id: studentId, rollNumber, scored };
+  const newStudent: StudentResult = { id: studentId, rollNumber, name, scored };
 
   const newQueueItems: ReviewQueueItem[] = readResult.reviewCrops.map((crop) =>
     crop.kind === 'question'
@@ -111,6 +123,12 @@ export function applyReadResult(
           addedAt,
           cropDataUrl: crop.cropDataUrl,
           kind: 'roll-number',
+          // A roll-number crop only ever exists when `rollNumberMatch.needsReview`
+          // was true (see `buildReviewItemSpecs`), so `rollNumberReviewReason` is
+          // never actually null here — the `?? 'unread'` only satisfies the type
+          // checker, which can't see that correlation across the two fields.
+          reason: rollNumberReviewReason ?? 'unread',
+          readValue: rollNumber,
         },
   );
 

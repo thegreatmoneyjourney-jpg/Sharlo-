@@ -1,20 +1,27 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   STOCK_TEMPLATE_QUESTION_COUNTS,
   computeStockTemplateGeometry,
 } from '@/lib/templates/geometry';
 import type { StockTemplateQuestionCount, TemplateGeometry } from '@/lib/templates/geometry';
+import { buildRosterLookup } from '@/lib/roster/roster';
+import type { Roster } from '@/lib/roster/roster';
 import { ExamScanFlow } from './exam-scan-flow';
+import { RosterPicker } from './roster-picker';
+import { RequireMasterKey } from '../../require-master-key';
 
 interface ExamSetup {
   title: string;
   geometry: TemplateGeometry;
+  roster: ReadonlyMap<string, string> | null;
 }
 
 const PRIMARY_BUTTON_CLASSES =
   'rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40';
+const SECONDARY_BUTTON_CLASSES =
+  'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
 
 /**
  * M2-004 (FR-EXAM-03) — exam creation + the answer-key scan flow.
@@ -30,7 +37,14 @@ const PRIMARY_BUTTON_CLASSES =
  * themselves (no encrypted-envelope storage exists yet — M3). The setup
  * step and the full scan-key/score-students flow are real and fully
  * functional in memory for the current session; only the final "save
- * this exam" step is out of reach until M3 lands.
+ * this exam" step is out of reach until a later M3 task.
+ *
+ * `M3-007` (`FR-ROSTER-01`) adds an optional "Add a class list" step,
+ * collapsed behind a toggle so a teacher who doesn't use rostering sees
+ * zero change from before — no passphrase prompt, no extra click. Only
+ * once opted in does `RequireMasterKey` ask for the passphrase (a roster
+ * is real encrypted data), and only then does `RosterPicker` fetch this
+ * account's saved classes.
  */
 export default function NewExamClient() {
   const [setup, setSetup] = useState<ExamSetup | null>(null);
@@ -38,12 +52,19 @@ export default function NewExamClient() {
   const [questionCount, setQuestionCount] = useState<StockTemplateQuestionCount>(
     STOCK_TEMPLATE_QUESTION_COUNTS[0],
   );
+  const [wantsRoster, setWantsRoster] = useState(false);
+  const [selectedRoster, setSelectedRoster] = useState<Roster | null>(null);
+  const rosterLookup = useMemo(
+    () => (selectedRoster ? buildRosterLookup(selectedRoster) : null),
+    [selectedRoster],
+  );
 
   if (setup) {
     return (
       <ExamScanFlow
         examTitle={setup.title}
         geometry={setup.geometry}
+        roster={setup.roster}
         onRestart={() => setSetup(null)}
       />
     );
@@ -91,6 +112,31 @@ export default function NewExamClient() {
         </p>
       </fieldset>
 
+      <div className="flex flex-col gap-2">
+        {!wantsRoster ? (
+          <button
+            type="button"
+            onClick={() => setWantsRoster(true)}
+            className={SECONDARY_BUTTON_CLASSES}
+          >
+            Add a class list (optional)
+          </button>
+        ) : (
+          <>
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Class list (optional)
+            </p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Scanned roll numbers will be matched against this class and the student&rsquo;s name
+              filled in automatically. Skip this if you&rsquo;d rather scan without one.
+            </p>
+            <RequireMasterKey unlockDescription="Enter your Encryption Passphrase to use a class list for this exam.">
+              {(masterKey) => <RosterPicker masterKey={masterKey} onSelect={setSelectedRoster} />}
+            </RequireMasterKey>
+          </>
+        )}
+      </div>
+
       <button
         type="button"
         disabled={titleInput.trim().length === 0}
@@ -98,6 +144,7 @@ export default function NewExamClient() {
           setSetup({
             title: titleInput.trim(),
             geometry: computeStockTemplateGeometry(questionCount),
+            roster: rosterLookup,
           })
         }
         className={PRIMARY_BUTTON_CLASSES}

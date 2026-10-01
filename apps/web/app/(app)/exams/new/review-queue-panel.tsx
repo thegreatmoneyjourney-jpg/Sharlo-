@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { QuestionResolution } from '@/lib/scanning/score-answers';
+import type { RollNumberReviewReason } from '@/lib/scanning/review-queue';
 
 export type ReviewQueueItem =
   | {
@@ -21,6 +22,10 @@ export type ReviewQueueItem =
       addedAt: number;
       cropDataUrl: string | null;
       kind: 'roll-number';
+      /** `M3-007` — why this needs review: `'unread'` (the grid itself couldn't be read) vs `'unmatched'` (read cleanly, but no roster entry matches). Drives which message the panel shows. */
+      reason: RollNumberReviewReason;
+      /** The value that WAS read, if any (`'unmatched'` always has one; `'unread'` never does) — pre-fills the correction input so the teacher isn't asked to retype a number the scanner already read correctly, only to confirm/correct it. */
+      readValue: string | null;
     };
 
 const CHOICE_BUTTON_CLASSES =
@@ -96,8 +101,14 @@ function QuestionResolveRow({
   );
 }
 
-function RollNumberResolveRow({ onResolve }: { onResolve: (rollNumber: string) => void }) {
-  const [value, setValue] = useState('');
+function RollNumberResolveRow({
+  initialValue,
+  onResolve,
+}: {
+  initialValue: string | null;
+  onResolve: (rollNumber: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue ?? '');
   return (
     <div className="flex items-center gap-2">
       <label className="sr-only" htmlFor="review-roll-number-input">
@@ -129,11 +140,15 @@ function RollNumberResolveRow({ onResolve }: { onResolve: (rollNumber: string) =
  * (not a separate route/step) so resolving items never interrupts the
  * M2-005-proven continuous scan loop; the teacher opens it between
  * captures, resolves what they can, and closes it to keep scanning.
- * Roll-number items resolve by typing the correct number rather than
- * picking from a roster — there's no class-list/rostering data model in
- * this codebase yet (a later milestone's job), so this is the only
- * resolution FR-DETECT-04's "route to Review Queue" wording actually
- * supports today; see docs/reports/SHARLO-M2-006.md's Flags. `cropDataUrl`
+ * Roll-number items still resolve by typing the correct number rather
+ * than picking from a roster (`M3-007` added roster *matching*, not a
+ * picker UI here — a reasonable, small follow-up once this is a real
+ * pain point, not built speculatively). The input pre-fills with
+ * whatever value WAS read (`item.readValue`) when the reason is
+ * `'unmatched'`, so the teacher is confirming/correcting a number the
+ * scanner already read, not retyping it from scratch; see
+ * docs/reports/SHARLO-M2-006.md's Flags for the original "no rostering
+ * exists yet" limitation this closes. `cropDataUrl`
  * can be null (M2-007, FR-REVIEW-03) — `exam-scan-flow.tsx` purges it on a
  * retention timer, but never drops the item itself, since a flagged
  * question with no resolution is exactly the "silently dropped" failure
@@ -174,7 +189,11 @@ export function ReviewQueuePanel({
           {items.map((item) => (
             <li key={item.id} className="rounded bg-zinc-900 p-3">
               <p className="mb-2 text-xs font-medium text-zinc-400">
-                {item.kind === 'question' ? `Question ${item.questionNumber}` : 'Roll number'}
+                {item.kind === 'question'
+                  ? `Question ${item.questionNumber}`
+                  : item.reason === 'unmatched'
+                    ? `Roll number ${item.readValue} — no matching student on the roster`
+                    : "Roll number — couldn't be read"}
               </p>
               {item.cropDataUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element -- a locally-generated data: URL crop, not a remote image Next's <Image> optimizer has anything to do with
@@ -200,6 +219,7 @@ export function ReviewQueuePanel({
                 />
               ) : (
                 <RollNumberResolveRow
+                  initialValue={item.readValue}
                   onResolve={(rollNumber) => onResolveRollNumber(item, rollNumber)}
                 />
               )}
