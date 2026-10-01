@@ -80,6 +80,19 @@ describe('ExamResultsClient', () => {
     expect(screen.getByText(/Q2:.*0% correct/)).toBeInTheDocument();
   });
 
+  it('renders class analytics (hardest questions, weakest students, score distribution) once loaded (M3-009)', async () => {
+    loadExamResultsMock.mockResolvedValue(makeExam());
+    render(<ExamResultsClient examId="exam-1" />);
+    await screen.findByText('Grade 8 quiz');
+
+    // Alice got Q1 right, Q2 wrong -> Q2 is the hardest (0%), Q1 is the easiest (100%).
+    expect(screen.getByText(/Q2 — 0% got it right/)).toBeInTheDocument();
+    expect(screen.getByText(/Q1 — 100% got it right/)).toBeInTheDocument();
+    // Alice is the only (and so "weakest") student, at 1/2 known-answer correct = 50%.
+    expect(screen.getByText(/Alice: 50%/)).toBeInTheDocument();
+    expect(screen.getByText(/50–60%: 1 student/)).toBeInTheDocument();
+  });
+
   it('editing a cell re-saves the whole exam with the update applied', async () => {
     loadExamResultsMock.mockResolvedValue(makeExam());
     render(<ExamResultsClient examId="exam-1" />);

@@ -7,6 +7,8 @@ import { loadExamResults, saveExamResults } from '@/lib/exams/exam-results';
 import type { ExamResults, StudentResult } from '@/lib/exams/exam-results';
 import { computeQuestionBreakdown } from '@/lib/exams/question-breakdown';
 import type { QuestionBreakdown } from '@/lib/exams/question-breakdown';
+import { computeClassAnalytics } from '@/lib/exams/class-analytics';
+import type { ClassAnalytics } from '@/lib/exams/class-analytics';
 import type { Bytes } from '@/lib/crypto/encoding';
 import { RequireMasterKey } from '../../require-master-key';
 import { ResultsGrid } from '../../results-grid';
@@ -62,6 +64,81 @@ function QuestionBreakdownView({ breakdown }: { breakdown: QuestionBreakdown[] }
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+const TOP_N = 5;
+
+/**
+ * `M3-009` (`FR-RESULTS-03`) — hardest questions / weakest students /
+ * score distribution, reusing `computeClassAnalytics`'s own ranking
+ * rather than re-sorting here. Shows only the top `TOP_N` of each ranked
+ * list (the full lists exist for a future "see all" affordance, not
+ * needed yet) and only the score-distribution buckets that actually have
+ * a student in them, so an empty exam doesn't render ten zero rows.
+ *
+ * Per `docs/SRS.md` §5.9a this FR is Pro/School-only — same as
+ * `FR-TPL-02` (custom templates, already shipped ungated in `M2-003`).
+ * No entitlement-check layer exists yet (`M4-005`), so this view (like
+ * that one) is deliberately left reachable by every account for now;
+ * `M4-005`/`M8`–`M11`'s gating retrofit is expected to cover this call
+ * site too, not just the ones it names explicitly.
+ */
+function ClassAnalyticsView({ analytics }: { analytics: ClassAnalytics }) {
+  const nonEmptyBuckets = analytics.scoreDistribution.filter((b) => b.studentCount > 0);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Class analytics</h2>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            Hardest questions
+          </h3>
+          <ul className="flex flex-col gap-1 text-xs text-zinc-700 dark:text-zinc-300">
+            {analytics.hardestQuestions.slice(0, TOP_N).map((q) => (
+              <li key={q.questionNumber}>
+                Q{q.questionNumber} —{' '}
+                {q.correctPercent === null
+                  ? 'no data'
+                  : `${Math.round(q.correctPercent)}% got it right`}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Weakest students</h3>
+          <ul className="flex flex-col gap-1 text-xs text-zinc-700 dark:text-zinc-300">
+            {analytics.weakestStudents.slice(0, TOP_N).map((s) => (
+              <li key={s.id}>
+                {s.name ?? s.rollNumber ?? `Student ${s.id}`}:{' '}
+                {s.correctPercent === null ? '—' : `${Math.round(s.correctPercent)}%`}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            Score distribution
+          </h3>
+          <ul className="flex flex-col gap-1 text-xs text-zinc-700 dark:text-zinc-300">
+            {nonEmptyBuckets.length === 0 && <li>No scored students yet.</li>}
+            {nonEmptyBuckets.map((b) => (
+              <li key={b.rangeStart}>
+                {b.rangeStart}–{b.rangeEnd}%: {b.studentCount} student
+                {b.studentCount === 1 ? '' : 's'}
+              </li>
+            ))}
+            {analytics.unscoredStudentCount > 0 && (
+              <li>
+                {analytics.unscoredStudentCount} student
+                {analytics.unscoredStudentCount === 1 ? '' : 's'} not yet scored
+              </li>
+            )}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }
@@ -129,6 +206,7 @@ function ExamResultsView({ examId, masterKey }: { examId: string; masterKey: Byt
   }
 
   const breakdown = computeQuestionBreakdown(state.exam.students, state.exam.questionCount);
+  const analytics = computeClassAnalytics(state.exam.students, state.exam.questionCount);
 
   return (
     <div className="flex flex-col gap-6">
@@ -147,6 +225,7 @@ function ExamResultsView({ examId, masterKey }: { examId: string; masterKey: Byt
         onChange={handleStudentsChange}
       />
       <QuestionBreakdownView breakdown={breakdown} />
+      <ClassAnalyticsView analytics={analytics} />
     </div>
   );
 }
