@@ -71,4 +71,13 @@ export async function grantAppRolePrivileges(sql: Sql): Promise<void> {
   // outstanding ones for the same email; verify-code selects it and
   // updates attempts/consumed_at.
   await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON email_otp_codes TO app_user`;
+  // M3-014 — matches schema.ts's own `schools_admin_access_only` policy,
+  // a single uniform `for: 'all'` predicate (no own-or-stock split like
+  // `templates`'), so the grant covers all four operations too rather
+  // than artificially lagging behind a policy already written for all of
+  // them. Only SELECT/INSERT are exercised by this task itself (create,
+  // then read back); UPDATE/DELETE are exercised by this task's own RLS
+  // test (proving cross-tenant isolation holds for those too) ahead of a
+  // real M3-015+ flow that needs them for real.
+  await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON schools TO app_user`;
 }

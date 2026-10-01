@@ -356,3 +356,84 @@ export const emailOtpCodes = pgTable(
     }),
   ],
 ).enableRLS();
+
+/**
+ * `M3-014`/`ADR-0010` — one row per School account. `adminUserId` is the
+ * tenant identifier here (the `templates`-style "separate FK column, not
+ * this table's own `id`" shape `schema.ts`'s own module comments already
+ * call out) — a teacher-under-school's own row lives on `users` as
+ * always; `school_members` (not built yet, `M3-015`'s own scope) is what
+ * will link a teacher to the school they joined.
+ *
+ * Both key-material columns are opaque ciphertext/public-key bytes this
+ * table's RLS policy protects the same way `users`' own wrapped-key
+ * columns are protected — nothing here is plaintext key material, so
+ * storing it server-side doesn't violate the zero-knowledge architecture.
+ *
+ * **Deviates from ADR-0010's literal `school_wrapped_key_by_admin_passphrase`
+ * column name/mechanism** — resolved here, not guessed at: the school key
+ * is wrapped under the admin's *master key* (an AES-256-GCM wrap via the
+ * exact primitive `lib/crypto/aes-gcm.ts` already provides, reusing the
+ * admin's already-unlocked session key, `lib/crypto/master-key-session.ts`)
+ * rather than re-deriving a passphrase-KEK and (separately) wrapping by the
+ * raw Recovery Key a second time. The master key is already the *one*
+ * thing both the Encryption Passphrase and the Recovery Key can unlock
+ * (that's the entire point of `users`' own dual-wrap design) — wrapping
+ * under it gives the school key the identical dual-recovery property ADR-0010
+ * asks for ("same mechanism as ADR-0005") via one wrap operation instead of
+ * two, and sidesteps a real problem the literal two-separate-wraps reading
+ * would hit: the raw Recovery Key is never retained in memory after its
+ * one-time initial issuance (`M3-003`'s own established design), so it
+ * simply isn't available at an arbitrary later moment like school creation
+ * without an unplanned "re-enter your Recovery Key right now" step nothing
+ * in ADR-0010's actual onboarding flow describes. The admin's X25519
+ * keypair (for the `M3-015`/`016` sealed-box teacher-to-admin key-sharing
+ * mechanism, Addendum 9's own resolution of a separate ADR-0010 gap) is
+ * protected the identical way for the identical reason. See
+ * `docs/reports/SHARLO-M3-014.md` and the ADR-0010 addendum this task adds.
+ */
+export const schools = pgTable(
+  'schools',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    adminUserId: uuid('admin_user_id')
+      .notNull()
+      .references(() => users.id),
+    // 'shared_drive' | 'folder' — ADR-0010's Workspace-vs-personal-account
+    // branch. driveLocationId is the Shared Drive id or the folder's file
+    // id, depending on which.
+    driveLocationType: text('drive_location_type', { enum: ['shared_drive', 'folder'] }).notNull(),
+    driveLocationId: text('drive_location_id').notNull(),
+    // Hex AES-256-GCM ciphertext (`aes-gcm.ts`'s combined iv||ciphertext+authTag
+    // blob) — the school key wrapped under the admin's master key. See this
+    // table's own doc comment above for why this, not two separate wraps.
+    schoolWrappedKeyByAdminMasterKey: text('school_wrapped_key_by_admin_master_key').notNull(),
+    // Hex-encoded X25519 public key — not a secret, servable to any
+    // authenticated teacher who needs it to seal a school-key copy to this
+    // admin (`M3-015`/`016`). Cleartext is correct here, same as a TLS
+    // certificate's public key being servable to anyone.
+    adminX25519PublicKey: text('admin_x25519_public_key').notNull(),
+    // Hex AES-256-GCM ciphertext — the X25519 *private* key wrapped under
+    // the admin's master key, same reasoning as schoolWrappedKeyByAdminMasterKey.
+    adminX25519WrappedPrivateKey: text('admin_x25519_wrapped_private_key').notNull(),
+    schemaVersion: integer('schema_version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // for: 'all' with only USING: Postgres applies the same predicate to
+    // WITH CHECK when none is given (the same reliance `users`' own
+    // self-access policy above already has) — correct here since there's
+    // only one access pattern this task needs (an admin's own school rows),
+    // unlike `templates`' own-or-stock split. A teacher-facing SELECT
+    // (reading their own school's public key/Drive location once
+    // `school_members` exists) is `M3-015`'s own policy addition, not
+    // built here — don't assume this table is teacher-readable yet.
+    pgPolicy('schools_admin_access_only', {
+      for: 'all',
+      to: 'app_user',
+      using: sql`${table.adminUserId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+  ],
+).enableRLS();

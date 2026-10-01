@@ -1,15 +1,19 @@
-import { getDriveAccessToken } from '../api/drive-token-client';
+import {
+  _configureDriveFetchForTests,
+  _resetDriveFetchForTests,
+  driveFetch,
+} from '../drive/drive-fetch';
 import type { StoredEnvelope } from './local-envelope-store';
 
 /**
  * `M3-006`/`ADR-0004` — the Drive-mode counterpart to `local-envelope-store.ts`,
  * same five-function shape, so `envelope-store.ts`'s facade can pick
  * between them without callers ever branching on account type. Every
- * request here goes straight from this browser to Google's own API using
- * a token from `drive-token-client.ts` — this module never calls our own
- * backend for anything except (indirectly, via that module) minting that
- * token, matching `ADR-0004`'s "zero backend involvement in the request
- * path" for the actual file operations.
+ * request here goes straight from this browser to Google's own API
+ * (`../drive/drive-fetch.ts`'s authenticated fetch) — this module never
+ * calls our own backend for anything except (indirectly, via that
+ * module) minting the access token, matching `ADR-0004`'s "zero backend
+ * involvement in the request path" for the actual file operations.
  *
  * Drive's `appProperties` (`type`, `recordId`, `schemaVersion` — all
  * strings, Drive's own constraint) exist purely so `files.list`'s `q`
@@ -31,50 +35,21 @@ import type { StoredEnvelope } from './local-envelope-store';
 const DRIVE_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 
-let fetchImpl: typeof fetch = fetch;
-let getAccessToken: () => Promise<string> = getDriveAccessToken;
-
 /**
  * Test-only: injects a fake `fetch` and/or access-token provider so this
- * module never makes a real Drive/network call in tests. Only overrides
- * whatever field is actually passed — a test that only cares about
- * `fetchImpl` shouldn't silently reset a `getAccessToken` an earlier
- * `beforeEach` already configured. Use `_resetDriveEnvelopeStoreForTests`
- * to put both back to their real defaults.
+ * module never makes a real Drive/network call in tests. Thin re-export
+ * of `../drive/drive-fetch.ts`'s own seam — kept under this module's own
+ * name so no existing test call site had to change when `M3-014`
+ * extracted the underlying fetch helper into that shared module.
  */
-export function _configureDriveEnvelopeStoreForTests(deps: {
-  fetchImpl?: typeof fetch;
-  getAccessToken?: () => Promise<string>;
-}): void {
-  if (deps.fetchImpl) {
-    fetchImpl = deps.fetchImpl;
-  }
-  if (deps.getAccessToken) {
-    getAccessToken = deps.getAccessToken;
-  }
-}
+export const _configureDriveEnvelopeStoreForTests = _configureDriveFetchForTests;
 
-/** Test-only: restores both `fetchImpl` and `getAccessToken` to their real implementations. */
-export function _resetDriveEnvelopeStoreForTests(): void {
-  fetchImpl = fetch;
-  getAccessToken = getDriveAccessToken;
-}
+/** Test-only: restores the shared fetch helper to its real implementation. */
+export const _resetDriveEnvelopeStoreForTests = _resetDriveFetchForTests;
 
 /** Drive's own escaping rule for a literal `'` inside a `q` string value. Defense-in-depth: every current caller only ever passes a UUID or one of our own fixed `type` strings, neither of which can contain one, but a query-string value should never trust that without escaping regardless. */
 function escapeDriveQueryValue(value: string): string {
   return value.replace(/'/g, "\\'");
-}
-
-async function driveFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const accessToken = await getAccessToken();
-  const response = await fetchImpl(url, {
-    ...init,
-    headers: { ...init.headers, Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) {
-    throw new Error(`Drive API request failed: ${response.status} ${await response.text()}`);
-  }
-  return response;
 }
 
 /** The Drive `fileId` for the (at most one) non-trashed file tagged with this `recordId`, or `undefined` if none exists yet. */

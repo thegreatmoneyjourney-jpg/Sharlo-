@@ -10,6 +10,7 @@ import { accountRoutes } from './routes/account.js';
 import { encryptionRoutes } from './routes/encryption.js';
 import { emailOtpRoutes } from './routes/email-otp.js';
 import { driveRoutes, type DriveRoutesOptions } from './routes/drive.js';
+import { schoolRoutes } from './routes/schools.js';
 import { registerCsrfProtection } from './auth/csrf-protection.js';
 import type { EmailSender } from './email/email-sender.js';
 
@@ -74,6 +75,7 @@ export function buildApp(opts: BuildAppOptions): FastifyInstance {
     useSecureCookies: opts.useSecureCookies,
   });
   app.register(driveRoutes, { db: opts.db, refreshAccessToken: opts.refreshAccessToken });
+  app.register(schoolRoutes, { db: opts.db });
 
   return app;
 }

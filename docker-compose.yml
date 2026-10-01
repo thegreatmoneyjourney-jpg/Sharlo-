@@ -64,6 +64,11 @@ services:
         # only at container-run time would have no effect on what the
         # browser actually receives. Same API_DOMAIN Caddy already needs.
         NEXT_PUBLIC_API_BASE_URL: https://${API_DOMAIN:?set in .env}
+        # M3-014 — same build-time-inlining requirement, see
+        # apps/web/.env.example for why this one is a public,
+        # referrer-restricted key rather than an integration_credentials
+        # secret.
+        NEXT_PUBLIC_GOOGLE_PICKER_API_KEY: ${GOOGLE_PICKER_API_KEY:?set in .env}
     restart: unless-stopped
     environment:
       NODE_ENV: production
