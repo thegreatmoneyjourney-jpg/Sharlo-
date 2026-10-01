@@ -80,6 +80,27 @@ jobs:
         run: npm run test:e2e
         working-directory: apps/web
 
+  oauth-scope-guard:
+    name: Google OAuth scope guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # M3-011 (NFR-SEC-03, CLAUDE.md's non-negotiables): a dedicated,
+      # standalone check that the requested Drive scope is exactly
+      # drive.file, never a broader one — its own named CI job (like
+      # secret-scanning below), not folded into the main test job, so a
+      # scope-widening PR can't pass CI by also quietly editing/removing
+      # test/google-oauth.test.ts's own assertion in the same diff. No
+      # dependency install needed — the script only reads source text.
+      - name: Check Google OAuth scope hasn't widened
+        run: node scripts/check-oauth-scope.mjs
+        working-directory: apps/api
+
   secret-scanning:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
