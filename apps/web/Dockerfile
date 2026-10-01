@@ -16,6 +16,11 @@ COPY apps/web ./apps/web
 # docker-compose.yml's `web` service `build.args`.
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+# M3-014 — same build-time-inlining requirement as above; see
+# .env.example for why this one is a public, referrer-restricted API key
+# rather than an integration_credentials secret.
+ARG NEXT_PUBLIC_GOOGLE_PICKER_API_KEY
+ENV NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=$NEXT_PUBLIC_GOOGLE_PICKER_API_KEY
 
 RUN npm run build -w web
 

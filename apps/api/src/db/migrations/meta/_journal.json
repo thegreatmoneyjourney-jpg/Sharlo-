@@ -50,6 +50,13 @@
       "when": 1790432991499,
       "tag": "0006_old_champions",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790879268709,
+      "tag": "0007_sour_juggernaut",
+      "breakpoints": true
     }
   ]
 }
