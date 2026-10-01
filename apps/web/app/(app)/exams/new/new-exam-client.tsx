@@ -8,14 +8,96 @@ import {
 import type { StockTemplateQuestionCount, TemplateGeometry } from '@/lib/templates/geometry';
 import { buildRosterLookup } from '@/lib/roster/roster';
 import type { Roster } from '@/lib/roster/roster';
+import { getEnvelopeStore } from '@/lib/storage/envelope-store';
+import { saveExamResults } from '@/lib/exams/exam-results';
+import type { ExamResults } from '@/lib/exams/exam-results';
+import type { Bytes } from '@/lib/crypto/encoding';
 import { ExamScanFlow } from './exam-scan-flow';
+import type { Mode } from './exam-scan-mode';
 import { RosterPicker } from './roster-picker';
 import { RequireMasterKey } from '../../require-master-key';
 
 interface ExamSetup {
   title: string;
+  questionCount: number;
   geometry: TemplateGeometry;
   roster: ReadonlyMap<string, string> | null;
+  rosterId: string | null;
+}
+
+/**
+ * `M3-008` — the step between "End exam" and landing on the saved
+ * exam's Results Table. Gated behind `RequireMasterKey` (saving is
+ * never optional, unlike the roster step above) and an explicit "Save
+ * and view results" click rather than auto-saving the instant the
+ * passphrase is entered — consistent with every other state-changing
+ * action in this app requiring a deliberate button press.
+ */
+function SaveExamStep({
+  masterKey,
+  setup,
+  mode,
+  onSaved,
+  onCancel,
+}: {
+  masterKey: Bytes;
+  setup: ExamSetup;
+  mode: Extract<Mode, { phase: 'scan-students' }>;
+  onSaved: (recordId: string) => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    setError(null);
+    setBusy(true);
+    try {
+      const store = await getEnvelopeStore();
+      const exam: ExamResults = {
+        recordId: crypto.randomUUID(),
+        title: setup.title,
+        questionCount: setup.questionCount,
+        key: mode.key,
+        rosterId: setup.rosterId,
+        students: mode.students,
+        createdAt: new Date().toISOString(),
+      };
+      await saveExamResults(store, masterKey, exam);
+      onSaved(exam.recordId);
+    } catch {
+      setError("Couldn't save this exam. Please try again.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        {mode.students.length} student{mode.students.length === 1 ? '' : 's'} scanned for{' '}
+        <strong>{setup.title}</strong>.
+      </p>
+      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className={SECONDARY_BUTTON_CLASSES}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={handleSave}
+          className={PRIMARY_BUTTON_CLASSES}
+        >
+          {busy ? 'Saving…' : 'Save and view results'}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 const PRIMARY_BUTTON_CLASSES =
@@ -33,21 +115,25 @@ const SECONDARY_BUTTON_CLASSES =
  * this picker is a reasonable, low-risk follow-up once persistence
  * exists, not a silent gap — flagged in `docs/reports/SHARLO-M2-004.md`.
  *
- * Like M2-003, this stops short of persisting the exam/results
- * themselves (no encrypted-envelope storage exists yet — M3). The setup
- * step and the full scan-key/score-students flow are real and fully
- * functional in memory for the current session; only the final "save
- * this exam" step is out of reach until a later M3 task.
- *
- * `M3-007` (`FR-ROSTER-01`) adds an optional "Add a class list" step,
+ * `M3-007` (`FR-ROSTER-01`) added an optional "Add a class list" step,
  * collapsed behind a toggle so a teacher who doesn't use rostering sees
  * zero change from before — no passphrase prompt, no extra click. Only
  * once opted in does `RequireMasterKey` ask for the passphrase (a roster
  * is real encrypted data), and only then does `RosterPicker` fetch this
  * account's saved classes.
+ *
+ * `M3-008` closes the "save this exam" gap M2-004 through M3-007 all
+ * deferred: ending a scan-students session (`handleEndExam`) now shows
+ * `SaveExamStep` instead of silently discarding everything, which
+ * saves the exam as a real encrypted envelope and lands on its Results
+ * Table (`/exams/[id]`). Ending during `capture-key` phase (nothing
+ * captured yet) stays a plain discard, unchanged.
  */
 export default function NewExamClient() {
   const [setup, setSetup] = useState<ExamSetup | null>(null);
+  const [endedMode, setEndedMode] = useState<Extract<Mode, { phase: 'scan-students' }> | null>(
+    null,
+  );
   const [titleInput, setTitleInput] = useState('');
   const [questionCount, setQuestionCount] = useState<StockTemplateQuestionCount>(
     STOCK_TEMPLATE_QUESTION_COUNTS[0],
@@ -59,13 +145,45 @@ export default function NewExamClient() {
     [selectedRoster],
   );
 
+  function handleEndExam(mode: Mode) {
+    if (mode.phase === 'capture-key') {
+      setSetup(null); // nothing captured yet -- plain discard, same as always
+      return;
+    }
+    setEndedMode(mode);
+  }
+
+  if (setup && endedMode) {
+    return (
+      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-6 p-6">
+        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Save exam</h1>
+        <RequireMasterKey unlockDescription="Enter your Encryption Passphrase to save this exam.">
+          {(masterKey) => (
+            <SaveExamStep
+              masterKey={masterKey}
+              setup={setup}
+              mode={endedMode}
+              onSaved={(recordId) => {
+                window.location.href = `/exams/${recordId}`;
+              }}
+              onCancel={() => {
+                setEndedMode(null);
+                setSetup(null);
+              }}
+            />
+          )}
+        </RequireMasterKey>
+      </div>
+    );
+  }
+
   if (setup) {
     return (
       <ExamScanFlow
         examTitle={setup.title}
         geometry={setup.geometry}
         roster={setup.roster}
-        onRestart={() => setSetup(null)}
+        onEndExam={handleEndExam}
       />
     );
   }
@@ -143,8 +261,10 @@ export default function NewExamClient() {
         onClick={() =>
           setSetup({
             title: titleInput.trim(),
+            questionCount,
             geometry: computeStockTemplateGeometry(questionCount),
             roster: rosterLookup,
+            rosterId: selectedRoster?.recordId ?? null,
           })
         }
         className={PRIMARY_BUTTON_CLASSES}

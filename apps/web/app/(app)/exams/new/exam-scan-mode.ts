@@ -1,18 +1,12 @@
 import type { QuestionResult } from '@/lib/scanning/bubble-fill';
 import { scoreSheet } from '@/lib/scanning/score-answers';
-import type { ScoredSheet } from '@/lib/scanning/score-answers';
 import type { SheetReadOutcome } from '@/lib/scanning/read-sheet-from-image';
 import type { TemplateGeometry } from '@/lib/templates/geometry';
 import type { ReviewQueueItem } from './review-queue-panel';
+import type { StudentResult } from '@/lib/exams/exam-results';
 
-/** One scanned student sheet, accumulated across the whole scan-students session (M2-006) — `scored` is re-derived via `rescoreSheet` whenever a review-queue item for this student is resolved, never hand-edited in place. */
-export interface StudentResult {
-  id: number;
-  rollNumber: string | null;
-  /** `M3-007` (`FR-ROSTER-02`) — the matched roster entry's name, or `null` when no roster was selected for this exam, the roll number didn't match one, or it couldn't be read at all. Never guessed or left silently blank without one of those three explicit reasons. */
-  name: string | null;
-  scored: ScoredSheet;
-}
+/** Re-exported for existing call sites — the real definition moved to `lib/exams/exam-results.ts` (`M3-008`) once persistence needed the identical shape and `lib/` can't depend on `app/`. */
+export type { StudentResult };
 
 /**
  * M2-008 (FR-DETECT-05): a freshly-read capture whose roll number matches

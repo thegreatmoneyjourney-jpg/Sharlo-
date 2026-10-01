@@ -67,13 +67,14 @@ const RETENTION_CHECK_INTERVAL_MS = 30 * 1000;
 export function ExamScanFlow({
   geometry,
   roster,
-  onRestart,
+  onEndExam,
 }: {
   examTitle: string;
   geometry: TemplateGeometry;
   /** `M3-007` (`FR-ROSTER-02`) — normalized roll number -> student name for the class this exam was set up with, or `null` when the teacher skipped rostering. Must be referentially stable across re-renders (`useMemo`d by the caller) — see `use-sheet-reader.ts`'s own doc note on why a fresh `Map` every render would be wasteful. */
   roster: ReadonlyMap<string, string> | null;
-  onRestart: () => void;
+  /** `M3-008` — hands the current `Mode` up to the caller rather than just signaling "the teacher is done": a `capture-key`-phase end has nothing to save (the caller discards, same as this button always did), while a `scan-students`-phase end has a real key+students to persist. This component makes no save/discard decision itself, matching its own scope (the scanning UX, not persistence). */
+  onEndExam: (mode: Mode) => void;
 }) {
   const [openCvReady, setOpenCvReady] = useState(false);
   const [mode, setMode] = useState<Mode>({ phase: 'capture-key' });
@@ -517,7 +518,7 @@ export function ExamScanFlow({
       )}
       <button
         type="button"
-        onClick={onRestart}
+        onClick={() => onEndExam(mode)}
         className="absolute top-2 right-2 rounded bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80"
       >
         End exam

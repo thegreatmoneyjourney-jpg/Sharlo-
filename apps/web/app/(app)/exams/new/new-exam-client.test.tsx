@@ -1,23 +1,61 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NewExamClient from './new-exam-client';
 import type { Roster } from '@/lib/roster/roster';
+import type { Mode } from './exam-scan-mode';
 
-const { examScanFlowMock, rosterPickerMock } = vi.hoisted(() => ({
-  examScanFlowMock: vi.fn(),
-  rosterPickerMock: vi.fn(),
-}));
+const { examScanFlowMock, rosterPickerMock, getEnvelopeStoreMock, saveExamResultsMock } =
+  vi.hoisted(() => ({
+    examScanFlowMock: vi.fn(),
+    rosterPickerMock: vi.fn(),
+    getEnvelopeStoreMock: vi.fn(),
+    saveExamResultsMock: vi.fn(),
+  }));
+
+const FAKE_MODE_WITH_STUDENTS: Mode = {
+  phase: 'scan-students',
+  key: [{ outcome: 'answered', optionIndex: 0 }],
+  students: [
+    {
+      id: 1,
+      rollNumber: '7',
+      name: 'Alice',
+      scored: {
+        scores: [{ outcome: 'correct' }],
+        correctCount: 1,
+        incorrectCount: 0,
+        needsReviewCount: 0,
+        excludedCount: 0,
+      },
+    },
+  ],
+  reviewQueue: [],
+  showReviewQueue: false,
+  pendingDuplicate: null,
+};
 
 // ExamScanFlow owns the whole camera/OpenCV pipeline — needs a real
 // browser, same rationale scan-client.test.tsx already established for
 // mocking out every OpenCV-touching hook. This file only proves the
 // setup form's own validation/state, not the scan flow itself (that's
 // proven end to end against a real dev server — see
-// docs/reports/SHARLO-M2-004.md).
+// docs/reports/SHARLO-M2-004.md). The two extra buttons simulate "End
+// exam" firing with each of the two `Mode` phases `handleEndExam` branches
+// on (`M3-008`).
 vi.mock('./exam-scan-flow', () => ({
-  ExamScanFlow: (props: { examTitle: string }) => {
+  ExamScanFlow: (props: { examTitle: string; onEndExam: (mode: Mode) => void }) => {
     examScanFlowMock(props);
-    return <div data-testid="exam-scan-flow">{props.examTitle}</div>;
+    return (
+      <div data-testid="exam-scan-flow">
+        {props.examTitle}
+        <button type="button" onClick={() => props.onEndExam({ phase: 'capture-key' })}>
+          end exam (nothing captured)
+        </button>
+        <button type="button" onClick={() => props.onEndExam(FAKE_MODE_WITH_STUDENTS)}>
+          end exam (with students)
+        </button>
+      </div>
+    );
   },
 }));
 
@@ -50,10 +88,20 @@ vi.mock('./roster-picker', () => ({
     );
   },
 }));
+vi.mock('@/lib/storage/envelope-store', () => ({ getEnvelopeStore: getEnvelopeStoreMock }));
+vi.mock('@/lib/exams/exam-results', () => ({ saveExamResults: saveExamResultsMock }));
+
+const FAKE_STORE = { name: 'fake-store' };
 
 beforeEach(() => {
   examScanFlowMock.mockReset();
   rosterPickerMock.mockReset();
+  getEnvelopeStoreMock.mockReset().mockResolvedValue(FAKE_STORE);
+  saveExamResultsMock.mockReset().mockResolvedValue(undefined);
+  // jsdom doesn't implement navigation -- window.location.href stays a
+  // plain, settable string here (same workaround signin-client.test.tsx
+  // already established) so the post-save redirect can be asserted on.
+  Object.defineProperty(window, 'location', { writable: true, value: { href: '' } });
 });
 
 afterEach(() => {
@@ -123,6 +171,54 @@ describe('NewExamClient', () => {
 
     const roster = examScanFlowMock.mock.calls[0]![0].roster as ReadonlyMap<string, string>;
     expect(roster.get('1')).toBe('Alice');
+  });
+
+  it('ending with nothing captured (capture-key phase) discards back to setup, same as always (M3-008)', () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /end exam \(nothing captured\)/i }));
+
+    expect(screen.queryByTestId('exam-scan-flow')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/exam title/i)).toBeInTheDocument(); // back at the setup form
+    expect(saveExamResultsMock).not.toHaveBeenCalled();
+  });
+
+  it('ending a scan-students session saves the exam and redirects to its results page (M3-008)', async () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /end exam \(with students\)/i }));
+    expect(await screen.findByText(/1 student scanned/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /save and view results/i }));
+
+    await waitFor(() => expect(saveExamResultsMock).toHaveBeenCalledTimes(1));
+    const [store, masterKey, savedExam] = saveExamResultsMock.mock.calls[0]!;
+    expect(store).toBe(FAKE_STORE);
+    expect(masterKey).toBeInstanceOf(Uint8Array);
+    expect(savedExam).toMatchObject({
+      title: 'Midterm',
+      questionCount: 20,
+      rosterId: null,
+      students: FAKE_MODE_WITH_STUDENTS.students,
+    });
+    await waitFor(() => expect(window.location.href).toBe(`/exams/${savedExam.recordId}`));
+  });
+
+  it('"Cancel" on the save step discards the exam and returns to setup', async () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end exam \(with students\)/i }));
+    await screen.findByText(/1 student scanned/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(saveExamResultsMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/exam title/i)).toBeInTheDocument(); // back at the setup form
   });
 
   it('never claims unattended 100% accuracy anywhere on the setup screen', () => {
