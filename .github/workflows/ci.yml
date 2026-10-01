@@ -96,7 +96,7 @@ jobs:
       # pre-launch pass — catches a credential accidentally committed
       # anywhere in history, including Addendum 5's own explicit ask.
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
