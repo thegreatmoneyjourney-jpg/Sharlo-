@@ -9,6 +9,12 @@ import { computeQuestionBreakdown } from '@/lib/exams/question-breakdown';
 import type { QuestionBreakdown } from '@/lib/exams/question-breakdown';
 import { computeClassAnalytics } from '@/lib/exams/class-analytics';
 import type { ClassAnalytics } from '@/lib/exams/class-analytics';
+import {
+  examResultsToCsv,
+  examResultsToXlsxBuffer,
+  safeExportFilename,
+} from '@/lib/exams/exam-export';
+import { downloadBlob } from '@/lib/export/download-file';
 import type { Bytes } from '@/lib/crypto/encoding';
 import { RequireMasterKey } from '../../require-master-key';
 import { ResultsGrid } from '../../results-grid';
@@ -143,6 +149,55 @@ function ClassAnalyticsView({ analytics }: { analytics: ClassAnalytics }) {
   );
 }
 
+const SECONDARY_BUTTON_CLASSES =
+  'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
+
+/**
+ * `M3-010` (`FR-RESULTS-04`) — export to CSV/Excel, entirely client-side:
+ * both formats are built from the already-decrypted `exam` in memory and
+ * handed straight to a browser download, no server round-trip. The XLSX
+ * build is async (`exceljs`'s `writeBuffer`), so the "Download Excel"
+ * button disables itself and shows "Preparing…" while it runs, the same
+ * busy-state shape `new-exam-client.tsx`'s `SaveExamStep` already uses.
+ */
+function ExportButtons({ exam }: { exam: ExamResults }) {
+  const [busy, setBusy] = useState(false);
+
+  function handleCsvExport() {
+    const blob = new Blob([examResultsToCsv(exam)], { type: 'text/csv;charset=utf-8' });
+    downloadBlob(blob, safeExportFilename(exam.title, 'csv'));
+  }
+
+  async function handleXlsxExport() {
+    setBusy(true);
+    try {
+      const buffer = await examResultsToXlsxBuffer(exam);
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      downloadBlob(blob, safeExportFilename(exam.title, 'xlsx'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex gap-3">
+      <button type="button" onClick={handleCsvExport} className={SECONDARY_BUTTON_CLASSES}>
+        Download CSV
+      </button>
+      <button
+        type="button"
+        onClick={() => void handleXlsxExport()}
+        disabled={busy}
+        className={SECONDARY_BUTTON_CLASSES}
+      >
+        {busy ? 'Preparing…' : 'Download Excel'}
+      </button>
+    </div>
+  );
+}
+
 /**
  * `M3-008` (`FR-RESULTS-01`/`02`) — the Results Table page. Loads the
  * saved exam once the master key is available (`RequireMasterKey`),
@@ -224,6 +279,7 @@ function ExamResultsView({ examId, masterKey }: { examId: string; masterKey: Byt
         questionCount={state.exam.questionCount}
         onChange={handleStudentsChange}
       />
+      <ExportButtons exam={state.exam} />
       <QuestionBreakdownView breakdown={breakdown} />
       <ClassAnalyticsView analytics={analytics} />
     </div>

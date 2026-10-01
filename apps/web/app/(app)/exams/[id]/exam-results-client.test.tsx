@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ExamResultsClient from './exam-results-client';
 import type { ExamResults } from '@/lib/exams/exam-results';
 
-const { getEnvelopeStoreMock, loadExamResultsMock, saveExamResultsMock } = vi.hoisted(() => ({
-  getEnvelopeStoreMock: vi.fn(),
-  loadExamResultsMock: vi.fn(),
-  saveExamResultsMock: vi.fn(),
-}));
+const { getEnvelopeStoreMock, loadExamResultsMock, saveExamResultsMock, downloadBlobMock } =
+  vi.hoisted(() => ({
+    getEnvelopeStoreMock: vi.fn(),
+    loadExamResultsMock: vi.fn(),
+    saveExamResultsMock: vi.fn(),
+    downloadBlobMock: vi.fn(),
+  }));
 
+vi.mock('@/lib/export/download-file', () => ({ downloadBlob: downloadBlobMock }));
 vi.mock('@/lib/storage/envelope-store', () => ({ getEnvelopeStore: getEnvelopeStoreMock }));
 vi.mock('@/lib/exams/exam-results', () => ({
   loadExamResults: loadExamResultsMock,
@@ -53,6 +56,7 @@ beforeEach(() => {
   getEnvelopeStoreMock.mockReset().mockResolvedValue(FAKE_STORE);
   loadExamResultsMock.mockReset();
   saveExamResultsMock.mockReset().mockResolvedValue(undefined);
+  downloadBlobMock.mockReset();
 });
 
 afterEach(cleanup);
@@ -91,6 +95,37 @@ describe('ExamResultsClient', () => {
     // Alice is the only (and so "weakest") student, at 1/2 known-answer correct = 50%.
     expect(screen.getByText(/Alice: 50%/)).toBeInTheDocument();
     expect(screen.getByText(/50–60%: 1 student/)).toBeInTheDocument();
+  });
+
+  it('"Download CSV" builds and downloads a CSV blob of the exam (M3-010)', async () => {
+    loadExamResultsMock.mockResolvedValue(makeExam());
+    render(<ExamResultsClient examId="exam-1" />);
+    await screen.findByText('Grade 8 quiz');
+
+    fireEvent.click(screen.getByRole('button', { name: /download csv/i }));
+
+    expect(downloadBlobMock).toHaveBeenCalledTimes(1);
+    const [blob, filename] = downloadBlobMock.mock.calls[0]!;
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe('text/csv;charset=utf-8');
+    expect(filename).toBe('Grade 8 quiz.csv');
+    expect(await blob.text()).toContain('Alice');
+  });
+
+  it('"Download Excel" shows a busy state and downloads an xlsx blob of the exam (M3-010)', async () => {
+    loadExamResultsMock.mockResolvedValue(makeExam());
+    render(<ExamResultsClient examId="exam-1" />);
+    await screen.findByText('Grade 8 quiz');
+
+    fireEvent.click(screen.getByRole('button', { name: /download excel/i }));
+    expect(await screen.findByRole('button', { name: /preparing/i })).toBeDisabled();
+
+    await waitFor(() => expect(downloadBlobMock).toHaveBeenCalledTimes(1));
+    const [blob, filename] = downloadBlobMock.mock.calls[0]!;
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    expect(filename).toBe('Grade 8 quiz.xlsx');
+    expect(await screen.findByRole('button', { name: /download excel/i })).not.toBeDisabled();
   });
 
   it('editing a cell re-saves the whole exam with the update applied', async () => {
