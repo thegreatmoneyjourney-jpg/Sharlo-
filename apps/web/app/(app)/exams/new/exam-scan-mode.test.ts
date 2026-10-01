@@ -3,6 +3,7 @@ import { applyReadResult } from './exam-scan-mode';
 import type { Mode } from './exam-scan-mode';
 import { computeStockTemplateGeometry } from '@/lib/templates/geometry';
 import { readRollNumber } from '@/lib/scanning/roll-number';
+import { resolveRollNumberAgainstRoster } from '@/lib/roster/roster';
 import type { QuestionResult } from '@/lib/scanning/bubble-fill';
 import type { SheetReadOutcome } from '@/lib/scanning/read-sheet-from-image';
 
@@ -13,10 +14,13 @@ function readOutcome(
   questions: QuestionResult[],
   rollNumberColumns: QuestionResult[] = [{ outcome: 'answered', optionIndex: 4 }],
   reviewCrops: SheetReadOutcome['reviewCrops'] = [],
+  roster: ReadonlyMap<string, string> | null = null,
 ): SheetReadOutcome {
+  const rollRead = readRollNumber(rollNumberColumns);
   return {
     result: { questions, rollNumberColumns },
-    rollRead: readRollNumber(rollNumberColumns),
+    rollRead,
+    rollNumberMatch: resolveRollNumberAgainstRoster(rollRead, roster),
     reviewCrops,
   };
 }
@@ -122,6 +126,7 @@ describe('applyReadResult — scan-students phase', () => {
         {
           id: 1,
           rollNumber: '9',
+          name: null,
           scored: {
             scores: [],
             correctCount: 0,
@@ -152,6 +157,7 @@ describe('applyReadResult — scan-students phase', () => {
         {
           id: 1,
           rollNumber: '9',
+          name: null,
           scored: {
             scores: [],
             correctCount: 0,
@@ -183,6 +189,7 @@ describe('applyReadResult — scan-students phase', () => {
         newStudent: {
           id: 1,
           rollNumber: '5',
+          name: null,
           scored: {
             scores: [],
             correctCount: 0,
@@ -210,6 +217,7 @@ describe('applyReadResult — scan-students phase', () => {
         {
           id: 1,
           rollNumber: null,
+          name: null,
           scored: {
             scores: [],
             correctCount: 0,
@@ -229,5 +237,97 @@ describe('applyReadResult — scan-students phase', () => {
     if (next.phase !== 'scan-students') throw new Error('unreachable');
     expect(next.students).toHaveLength(2);
     expect(next.pendingDuplicate).toBeNull();
+  });
+});
+
+describe('applyReadResult — roster matching (M3-007)', () => {
+  const key: QuestionResult[] = Array.from({ length: 20 }, () => ({
+    outcome: 'answered' as const,
+    optionIndex: 0,
+  }));
+  const baseMode: Mode = {
+    phase: 'scan-students',
+    key,
+    students: [],
+    reviewQueue: [],
+    showReviewQueue: false,
+    pendingDuplicate: null,
+  };
+
+  it('populates the student name when the roll number matches a roster entry', () => {
+    const roster = new Map([['4', 'Alice']]);
+    const next = applyReadResult(baseMode, {
+      readResult: readOutcome(
+        allAnswered(20).result.questions,
+        [{ outcome: 'answered', optionIndex: 4 }],
+        [],
+        roster,
+      ),
+      studentId: 100,
+      addedAt: 1000,
+      geometry: GEOMETRY,
+    });
+    if (next.phase !== 'scan-students') throw new Error('unreachable');
+    expect(next.students[0]).toMatchObject({ rollNumber: '4', name: 'Alice' });
+    expect(next.reviewQueue).toHaveLength(0);
+  });
+
+  it('leaves name null and adds a reviewQueue item with reason "unmatched" when the roll number reads cleanly but matches nothing', () => {
+    const roster = new Map([['4', 'Alice']]);
+    const next = applyReadResult(baseMode, {
+      readResult: readOutcome(
+        allAnswered(20).result.questions,
+        [{ outcome: 'answered', optionIndex: 9 }],
+        [{ kind: 'roll-number', cropDataUrl: 'data:image/png;base64,FAKE' }],
+        roster,
+      ),
+      studentId: 100,
+      addedAt: 1000,
+      geometry: GEOMETRY,
+    });
+    if (next.phase !== 'scan-students') throw new Error('unreachable');
+    expect(next.students[0]).toMatchObject({ rollNumber: '9', name: null });
+    expect(next.reviewQueue).toHaveLength(1);
+    expect(next.reviewQueue[0]).toMatchObject({
+      kind: 'roll-number',
+      reason: 'unmatched',
+      readValue: '9',
+    });
+  });
+
+  it('adds a reviewQueue item with reason "unread" and a null readValue when the roll number can\'t be read, even with a roster present', () => {
+    const roster = new Map([['4', 'Alice']]);
+    const next = applyReadResult(baseMode, {
+      readResult: readOutcome(
+        allAnswered(20).result.questions,
+        [{ outcome: 'blank' }],
+        [{ kind: 'roll-number', cropDataUrl: 'data:image/png;base64,FAKE' }],
+        roster,
+      ),
+      studentId: 100,
+      addedAt: 1000,
+      geometry: GEOMETRY,
+    });
+    if (next.phase !== 'scan-students') throw new Error('unreachable');
+    expect(next.students[0]).toMatchObject({ rollNumber: null, name: null });
+    expect(next.reviewQueue[0]).toMatchObject({
+      kind: 'roll-number',
+      reason: 'unread',
+      readValue: null,
+    });
+  });
+
+  it('leaves name null, with no review item, when no roster is selected at all — pre-M3-007 behavior preserved', () => {
+    const next = applyReadResult(baseMode, {
+      readResult: readOutcome(allAnswered(20).result.questions, [
+        { outcome: 'answered', optionIndex: 4 },
+      ]),
+      studentId: 100,
+      addedAt: 1000,
+      geometry: GEOMETRY,
+    });
+    if (next.phase !== 'scan-students') throw new Error('unreachable');
+    expect(next.students[0]).toMatchObject({ rollNumber: '4', name: null });
+    expect(next.reviewQueue).toHaveLength(0);
   });
 });

@@ -77,29 +77,49 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
     return { sender: { send: sendMock }, sendMock };
   }
 
+  /**
+   * `runRecoveryKeyReminderSweep` sweeps the *entire* `users` table by
+   * design (it's a real cross-tenant scheduled job, not scoped to one
+   * account) — every assertion below is scoped to this test's own
+   * seeded email(s) via this helper, never to `sendMock`'s raw call
+   * count/`result`'s raw totals. Those globals can be legitimately
+   * nudged by a *different* test file's own transient, narrow-window
+   * fixture (e.g. `encryption-routes.test.ts`'s two tests that
+   * deliberately backdate `recovery_key_issued_at` via SQL to exercise
+   * the reminder-status endpoint, cleaning up immediately after but
+   * still a real, if brief, window) running concurrently against the
+   * same shared Postgres instance — a genuine, rare cross-file race,
+   * not a bug in the sweep itself. Found via an actual intermittent
+   * failure while shipping `M3-007`; root-caused rather than
+   * re-run-until-green — see that task's report.
+   */
+  function remindersSent(sendMock: ReturnType<typeof vi.fn>): { to: string; days: 7 | 30 }[] {
+    return sendMock.mock.calls.map((call) => {
+      const message = call[0] as { to: string; subject: string };
+      return { to: message.to, days: message.subject.startsWith('Final reminder') ? 30 : 7 };
+    });
+  }
+
+  function remindersSentTo(sendMock: ReturnType<typeof vi.fn>, email: string) {
+    return remindersSent(sendMock).filter((reminder) => reminder.to === email);
+  }
+
   it('sends nothing for an account that never completed encryption setup', async () => {
-    await seedUser({ recoveryKeyIssuedAt: null });
-    const { sender, sendMock } = fakeSender();
-
-    const result = await runRecoveryKeyReminderSweep(
-      ownerDb,
-      sender,
-      APP_BASE_URL,
-      new Date(),
-      silentLogger,
-    );
-
-    expect(sendMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ sevenDaySent: 0, thirtyDaySent: 0, failures: 0 });
-  });
-
-  it('sends nothing before the 7-day threshold', async () => {
-    await seedUser({ recoveryKeyIssuedAt: daysAgo(3) });
+    const user = await seedUser({ recoveryKeyIssuedAt: null });
     const { sender, sendMock } = fakeSender();
 
     await runRecoveryKeyReminderSweep(ownerDb, sender, APP_BASE_URL, new Date(), silentLogger);
 
-    expect(sendMock).not.toHaveBeenCalled();
+    expect(remindersSentTo(sendMock, user.email)).toEqual([]);
+  });
+
+  it('sends nothing before the 7-day threshold', async () => {
+    const user = await seedUser({ recoveryKeyIssuedAt: daysAgo(3) });
+    const { sender, sendMock } = fakeSender();
+
+    await runRecoveryKeyReminderSweep(ownerDb, sender, APP_BASE_URL, new Date(), silentLogger);
+
+    expect(remindersSentTo(sendMock, user.email)).toEqual([]);
   });
 
   it('sends the 7-day reminder once 7 days have elapsed, and records it', async () => {
@@ -114,9 +134,8 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
       silentLogger,
     );
 
-    expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(sendMock.mock.calls[0]![0].to).toBe(user.email);
-    expect(result.sevenDaySent).toBe(1);
+    expect(remindersSentTo(sendMock, user.email)).toEqual([{ to: user.email, days: 7 }]);
+    expect(result.sevenDaySent).toBeGreaterThanOrEqual(1);
 
     const [row] =
       await ownerClient`SELECT recovery_key_reminder_7d_sent_at FROM users WHERE id = ${user.id}`;
@@ -124,19 +143,15 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
   });
 
   it('does not re-send the 7-day reminder on a later sweep once already sent', async () => {
-    await seedUser({ recoveryKeyIssuedAt: daysAgo(8), recoveryKeyReminder7dSentAt: daysAgo(1) });
+    const user = await seedUser({
+      recoveryKeyIssuedAt: daysAgo(8),
+      recoveryKeyReminder7dSentAt: daysAgo(1),
+    });
     const { sender, sendMock } = fakeSender();
 
-    const result = await runRecoveryKeyReminderSweep(
-      ownerDb,
-      sender,
-      APP_BASE_URL,
-      new Date(),
-      silentLogger,
-    );
+    await runRecoveryKeyReminderSweep(ownerDb, sender, APP_BASE_URL, new Date(), silentLogger);
 
-    expect(sendMock).not.toHaveBeenCalled();
-    expect(result.sevenDaySent).toBe(0);
+    expect(remindersSentTo(sendMock, user.email)).toEqual([]);
   });
 
   it('sends both the 7-day and 30-day reminder in the same sweep for an account issued 31+ days ago that never had either sent', async () => {
@@ -151,8 +166,10 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
       silentLogger,
     );
 
-    expect(sendMock).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ sevenDaySent: 1, thirtyDaySent: 1, failures: 0 });
+    const sentToUser = remindersSentTo(sendMock, user.email);
+    expect(sentToUser.map((r) => r.days).sort((a, b) => a - b)).toEqual([7, 30]);
+    expect(result.sevenDaySent).toBeGreaterThanOrEqual(1);
+    expect(result.thirtyDaySent).toBeGreaterThanOrEqual(1);
 
     const [row] =
       await ownerClient`SELECT recovery_key_reminder_7d_sent_at, recovery_key_reminder_30d_sent_at FROM users WHERE id = ${user.id}`;
@@ -161,41 +178,30 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
   });
 
   it('sends the 30-day reminder without re-sending the 7-day one, if the 7-day one already went out', async () => {
-    await seedUser({
+    const user = await seedUser({
       recoveryKeyIssuedAt: daysAgo(31),
       recoveryKeyReminder7dSentAt: daysAgo(24),
     });
     const { sender, sendMock } = fakeSender();
 
-    const result = await runRecoveryKeyReminderSweep(
-      ownerDb,
-      sender,
-      APP_BASE_URL,
-      new Date(),
-      silentLogger,
-    );
+    await runRecoveryKeyReminderSweep(ownerDb, sender, APP_BASE_URL, new Date(), silentLogger);
 
-    expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ sevenDaySent: 0, thirtyDaySent: 1, failures: 0 });
+    expect(remindersSentTo(sendMock, user.email)).toEqual([{ to: user.email, days: 30 }]);
+    const [row] =
+      await ownerClient`SELECT recovery_key_reminder_30d_sent_at FROM users WHERE id = ${user.id}`;
+    expect(row!.recovery_key_reminder_30d_sent_at).not.toBeNull();
   });
 
   it('excludes an account that has actively dismissed reminders, however long ago it was issued', async () => {
-    await seedUser({
+    const user = await seedUser({
       recoveryKeyIssuedAt: daysAgo(60),
       recoveryKeyReminderDismissedAt: daysAgo(1),
     });
     const { sender, sendMock } = fakeSender();
 
-    const result = await runRecoveryKeyReminderSweep(
-      ownerDb,
-      sender,
-      APP_BASE_URL,
-      new Date(),
-      silentLogger,
-    );
+    await runRecoveryKeyReminderSweep(ownerDb, sender, APP_BASE_URL, new Date(), silentLogger);
 
-    expect(sendMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ sevenDaySent: 0, thirtyDaySent: 0, failures: 0 });
+    expect(remindersSentTo(sendMock, user.email)).toEqual([]);
   });
 
   it('leaves the sent-at timestamp unset and counts a failure when the email sender throws, so the next sweep retries', async () => {
@@ -210,7 +216,7 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
       silentLogger,
     );
 
-    expect(result).toEqual({ sevenDaySent: 0, thirtyDaySent: 0, failures: 1 });
+    expect(result.failures).toBeGreaterThanOrEqual(1);
     const [row] =
       await ownerClient`SELECT recovery_key_reminder_7d_sent_at FROM users WHERE id = ${user.id}`;
     expect(row!.recovery_key_reminder_7d_sent_at).toBeNull();
@@ -229,9 +235,8 @@ describe.skipIf(!DATABASE_URL)('runRecoveryKeyReminderSweep', () => {
       silentLogger,
     );
 
-    expect(result.sevenDaySent).toBe(2);
-    const sentTo = sendMock.mock.calls.map((call) => call[0].to);
-    expect(sentTo).toContain(userA.email);
-    expect(sentTo).toContain(userB.email);
+    expect(result.sevenDaySent).toBeGreaterThanOrEqual(2);
+    expect(remindersSentTo(sendMock, userA.email)).toEqual([{ to: userA.email, days: 7 }]);
+    expect(remindersSentTo(sendMock, userB.email)).toEqual([{ to: userB.email, days: 7 }]);
   });
 });

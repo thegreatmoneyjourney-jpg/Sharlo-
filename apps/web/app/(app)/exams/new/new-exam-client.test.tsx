@@ -1,8 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NewExamClient from './new-exam-client';
+import type { Roster } from '@/lib/roster/roster';
 
-const { examScanFlowMock } = vi.hoisted(() => ({ examScanFlowMock: vi.fn() }));
+const { examScanFlowMock, rosterPickerMock } = vi.hoisted(() => ({
+  examScanFlowMock: vi.fn(),
+  rosterPickerMock: vi.fn(),
+}));
 
 // ExamScanFlow owns the whole camera/OpenCV pipeline — needs a real
 // browser, same rationale scan-client.test.tsx already established for
@@ -17,8 +21,39 @@ vi.mock('./exam-scan-flow', () => ({
   },
 }));
 
+// `RequireMasterKey`/`RosterPicker` each own their own state machine and
+// have their own dedicated test files (`require-master-key.test.tsx`,
+// `roster-picker.test.tsx`) — mocked here for the same reason
+// `ExamScanFlow` is: this file proves only `NewExamClient`'s own toggle/
+// wiring, not what's behind it. The stub skips straight to "unlocked"
+// with a fake key and exposes a button that simulates picking a roster.
+vi.mock('../../require-master-key', () => ({
+  RequireMasterKey: ({ children }: { children: (masterKey: Uint8Array) => React.ReactNode }) =>
+    children(new Uint8Array(32)),
+}));
+vi.mock('./roster-picker', () => ({
+  RosterPicker: ({ onSelect }: { onSelect: (roster: Roster | null) => void }) => {
+    rosterPickerMock();
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          onSelect({
+            recordId: 'c1',
+            className: 'Grade 8A',
+            entries: [{ rollNumber: '1', studentName: 'Alice' }],
+          })
+        }
+      >
+        pick Grade 8A
+      </button>
+    );
+  },
+}));
+
 beforeEach(() => {
   examScanFlowMock.mockReset();
+  rosterPickerMock.mockReset();
 });
 
 afterEach(() => {
@@ -65,6 +100,29 @@ describe('NewExamClient', () => {
     const passedProps = examScanFlowMock.mock.calls[0]![0];
     expect(passedProps.examTitle).toBe('Midterm');
     expect(passedProps.geometry.questionCount).toBe(50);
+  });
+
+  it('passes roster: null to ExamScanFlow when the class-list step is never opened (M3-007)', () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+
+    expect(rosterPickerMock).not.toHaveBeenCalled();
+    expect(examScanFlowMock.mock.calls[0]![0].roster).toBeNull();
+  });
+
+  it('opting into a class list and picking one passes a roster lookup to ExamScanFlow (M3-007)', () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add a class list/i }));
+    expect(rosterPickerMock).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /pick grade 8a/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+
+    const roster = examScanFlowMock.mock.calls[0]![0].roster as ReadonlyMap<string, string>;
+    expect(roster.get('1')).toBe('Alice');
   });
 
   it('never claims unattended 100% accuracy anywhere on the setup screen', () => {

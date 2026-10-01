@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { purgeExpiredCrops } from './review-queue-panel';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ReviewQueuePanel, purgeExpiredCrops } from './review-queue-panel';
 import type { ReviewQueueItem } from './review-queue-panel';
 
 const RETENTION_MS = 15 * 60 * 1000;
 const NOW = 1_000_000_000; // an arbitrary fixed epoch ms, unrelated to real time
+
+afterEach(cleanup);
 
 function questionItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
   return {
@@ -72,6 +75,8 @@ describe('purgeExpiredCrops', () => {
         addedAt: NOW,
         cropDataUrl: 'data:image/png;base64,FAKE',
         kind: 'roll-number',
+        reason: 'unread',
+        readValue: null,
       },
     ];
     const result = purgeExpiredCrops(items, NOW + RETENTION_MS + 1, RETENTION_MS);
@@ -86,5 +91,64 @@ describe('purgeExpiredCrops', () => {
 
   it('handles an empty queue', () => {
     expect(purgeExpiredCrops([], NOW, RETENTION_MS)).toEqual([]);
+  });
+});
+
+describe('ReviewQueuePanel roll-number items (M3-007)', () => {
+  function rollNumberItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
+    return {
+      id: 'roll',
+      studentId: 1,
+      addedAt: NOW,
+      cropDataUrl: null,
+      kind: 'roll-number',
+      reason: 'unread',
+      readValue: null,
+      ...overrides,
+    } as ReviewQueueItem;
+  }
+
+  it('shows an "unread" message with no pre-filled value', () => {
+    render(
+      <ReviewQueuePanel
+        items={[rollNumberItem({ reason: 'unread', readValue: null })]}
+        onResolveQuestion={vi.fn()}
+        onResolveRollNumber={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/couldn't be read/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Roll number')).toHaveValue('');
+  });
+
+  it('shows an "unmatched" message and pre-fills the read value', () => {
+    render(
+      <ReviewQueuePanel
+        items={[rollNumberItem({ reason: 'unmatched', readValue: '013' })]}
+        onResolveQuestion={vi.fn()}
+        onResolveRollNumber={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/013.*no matching student/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Roll number')).toHaveValue('013');
+  });
+
+  it('resolves with the (possibly-edited) pre-filled value', () => {
+    const onResolveRollNumber = vi.fn();
+    const item = rollNumberItem({ reason: 'unmatched', readValue: '013' });
+    render(
+      <ReviewQueuePanel
+        items={[item]}
+        onResolveQuestion={vi.fn()}
+        onResolveRollNumber={onResolveRollNumber}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Roll number'), { target: { value: '13' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(onResolveRollNumber).toHaveBeenCalledWith(item, '13');
   });
 });

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExamScanFlow } from './exam-scan-flow';
 import { computeStockTemplateGeometry } from '@/lib/templates/geometry';
 import { readRollNumber } from '@/lib/scanning/roll-number';
+import { resolveRollNumberAgainstRoster } from '@/lib/roster/roster';
 import type { CameraState } from '../../scan/use-camera-stream';
 import type { CapturedFrame } from '../../scan/capture-video-frame';
 import type { QuestionResult } from '@/lib/scanning/bubble-fill';
@@ -75,15 +76,25 @@ function fakeFrame(capturedAt: number): CapturedFrame {
   } as unknown as CapturedFrame;
 }
 
-/** Builds the shape the real useSheetReader produces, deriving `rollRead` from `rollNumberColumns` via the real readRollNumber rather than hand-typing a value that could drift out of sync with it. */
+/**
+ * Builds the shape the real useSheetReader produces, deriving `rollRead`
+ * and `rollNumberMatch` from `rollNumberColumns`/`roster` via the real
+ * `readRollNumber`/`resolveRollNumberAgainstRoster` rather than
+ * hand-typing values that could drift out of sync with them.
+ * `roster: null` (the default) reproduces the exact pre-M3-007 behavior
+ * every existing call site here relies on.
+ */
 function readOutcome(
   questions: QuestionResult[],
   rollNumberColumns: QuestionResult[] = [{ outcome: 'answered', optionIndex: 4 }],
   reviewCrops: ReviewCropItem[] = [],
+  roster: ReadonlyMap<string, string> | null = null,
 ): SheetReadOutcome {
+  const rollRead = readRollNumber(rollNumberColumns);
   return {
     result: { questions, rollNumberColumns },
-    rollRead: readRollNumber(rollNumberColumns),
+    rollRead,
+    rollNumberMatch: resolveRollNumberAgainstRoster(rollRead, roster),
     reviewCrops,
   };
 }
@@ -138,7 +149,7 @@ afterEach(() => {
 describe('ExamScanFlow', () => {
   it('shows a loading indicator until OpenCV and the camera are both ready', () => {
     loadOpenCvMock.mockReturnValue(new Promise(() => {}));
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />);
     expect(screen.getByRole('status')).toHaveTextContent(/loading scanner/i);
   });
 
@@ -148,7 +159,7 @@ describe('ExamScanFlow', () => {
       state: { status: 'error', reason: 'permission-denied' },
       retry,
     });
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn.t start the camera/i);
     screen.getByRole('button', { name: /try again/i }).click();
@@ -156,7 +167,7 @@ describe('ExamScanFlow', () => {
   });
 
   it('starts in capture-key mode, prompting to scan the answer key', async () => {
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />);
     expect(await screen.findByText(/scan the answer key sheet first/i)).toBeInTheDocument();
   });
 
@@ -170,7 +181,7 @@ describe('ExamScanFlow', () => {
       readOutcome([{ outcome: 'answered', optionIndex: 0 }, { outcome: 'flagged' }], []),
     );
 
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/question 2/i);
@@ -186,7 +197,7 @@ describe('ExamScanFlow', () => {
     });
     useSheetReaderMock.mockReturnValue(allAnswered(20));
 
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />);
 
     expect(await screen.findByText(/key captured/i)).toBeInTheDocument();
     // No student sheet scanned yet — nothing to report on, so neither
@@ -204,7 +215,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -222,7 +233,9 @@ describe('ExamScanFlow', () => {
       readOutcome(studentAnswers, [{ outcome: 'answered', optionIndex: 7 }]),
     );
 
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     expect(await screen.findByText('18 / 20')).toBeInTheDocument();
     expect(screen.getByText(/roll #7/i)).toBeInTheDocument();
@@ -237,7 +250,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -258,7 +271,9 @@ describe('ExamScanFlow', () => {
       ),
     );
 
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     const toggle = await screen.findByRole('button', { name: /review needed \(1\)/i });
     // Question 3 is pending review, not excluded — still counts in the denominator.
@@ -282,7 +297,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -301,7 +316,9 @@ describe('ExamScanFlow', () => {
         [{ kind: 'question', questionNumber: 7, cropDataUrl: 'data:image/png;base64,FAKE' }],
       ),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     fireEvent.click(await screen.findByRole('button', { name: /review needed \(1\)/i }));
     fireEvent.click(screen.getByRole('button', { name: /exclude/i }));
@@ -329,7 +346,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -348,7 +365,9 @@ describe('ExamScanFlow', () => {
         [{ kind: 'question', questionNumber: 4, cropDataUrl: 'data:image/png;base64,FAKE' }],
       ),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     fireEvent.click(await screen.findByRole('button', { name: /review needed \(1\)/i }));
     expect(screen.getByAltText(/question 4/i)).toBeInTheDocument();
@@ -383,7 +402,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -399,7 +418,9 @@ describe('ExamScanFlow', () => {
         [{ kind: 'roll-number', cropDataUrl: 'data:image/png;base64,FAKE' }],
       ),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     expect(await screen.findByText(/roll number not read/i)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /review needed \(1\)/i }));
@@ -412,6 +433,87 @@ describe('ExamScanFlow', () => {
     expect(screen.getByText(/roll #42/i)).toBeInTheDocument();
   });
 
+  it('shows the matched student name once a roll number matches the roster (M3-007)', async () => {
+    const roster = new Map([['4', 'Alice']]);
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={roster} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(
+        allAnswered(20, 0).result.questions,
+        [{ outcome: 'answered', optionIndex: 4 }],
+        [],
+        roster,
+      ),
+    );
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={roster} onRestart={vi.fn()} />,
+    );
+
+    expect(await screen.findByText(/alice.*roll #4/i)).toBeInTheDocument();
+  });
+
+  it('routes a read-but-unmatched roll number to review with a reason, and a manual correction picks up the roster match (M3-007)', async () => {
+    const roster = new Map([['42', 'Bob']]);
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(1000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
+
+    const { rerender } = render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={roster} onRestart={vi.fn()} />,
+    );
+    await screen.findByText(/key captured/i);
+
+    useManualCaptureMock.mockReturnValue({
+      capturedFrame: fakeFrame(2000),
+      canCapture: true,
+      capture: vi.fn(),
+    });
+    useSheetReaderMock.mockReturnValue(
+      readOutcome(
+        allAnswered(20, 0).result.questions,
+        [{ outcome: 'answered', optionIndex: 9 }], // reads as "9" -- not in the roster
+        [{ kind: 'roll-number', cropDataUrl: 'data:image/png;base64,FAKE' }],
+        roster,
+      ),
+    );
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={roster} onRestart={vi.fn()} />,
+    );
+
+    // A read-but-unmatched roll number still shows immediately (the sheet
+    // WAS read), while also being flagged for review -- same as an
+    // unreadable one already was before M3-007.
+    expect(await screen.findByText(/roll #9/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /review needed \(1\)/i }));
+
+    expect(screen.getByText(/9.*no matching student/i)).toBeInTheDocument();
+    const input = screen.getByLabelText(/correct roll number/i);
+    expect(input).toHaveValue('9'); // pre-filled with the value that was actually read
+    fireEvent.change(input, { target: { value: '42' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(await screen.findByRole('button', { name: /fully graded/i })).toBeInTheDocument();
+    expect(screen.getByText(/bob.*roll #42/i)).toBeInTheDocument();
+  });
+
   it('warns and holds the save when the same roll number is scanned twice, without saving it (M2-008)', async () => {
     useManualCaptureMock.mockReturnValue({
       capturedFrame: fakeFrame(1000),
@@ -421,7 +523,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -433,7 +535,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     await screen.findByText('20 / 20');
 
     // A second capture reads the exact same roll number.
@@ -445,7 +549,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 1).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     const dialog = await screen.findByRole('alertdialog');
     expect(dialog).toHaveTextContent(/roll #2/i);
@@ -463,7 +569,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -475,7 +581,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 3 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     await screen.findByText('20 / 20');
 
     useManualCaptureMock.mockReturnValue({
@@ -486,7 +594,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 1).result.questions, [{ outcome: 'answered', optionIndex: 3 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     await screen.findByRole('alertdialog');
 
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -504,7 +614,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -524,7 +634,9 @@ describe('ExamScanFlow', () => {
         [{ kind: 'question', questionNumber: 1, cropDataUrl: 'data:image/png;base64,FAKE' }],
       ),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     expect(await screen.findByRole('button', { name: /review needed \(1\)/i })).toBeInTheDocument();
 
     // Second scan of the same roll #9: fully answered this time, no flags.
@@ -536,7 +648,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 9 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     await screen.findByRole('alertdialog');
 
     fireEvent.click(screen.getByRole('button', { name: /rescan intentionally/i }));
@@ -557,7 +671,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -569,7 +683,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 1 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
     await screen.findByText(/roll #1/i);
 
     useManualCaptureMock.mockReturnValue({
@@ -580,7 +696,9 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(
       readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 2 }]),
     );
-    rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+    rerender(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+    );
 
     expect(await screen.findByText(/roll #2/i)).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
@@ -602,7 +720,7 @@ describe('ExamScanFlow', () => {
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0)); // key: every question = option 0
 
     const { rerender } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
 
@@ -630,7 +748,9 @@ describe('ExamScanFlow', () => {
         ]),
       );
 
-      rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+      rerender(
+        <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+      );
 
       expect(await screen.findByText(`${correctCount} / 20`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(`roll #${rollString}$`, 'i'))).toBeInTheDocument();
@@ -639,14 +759,16 @@ describe('ExamScanFlow', () => {
 
   it('calls onRestart when "End exam" is clicked', async () => {
     const onRestart = vi.fn();
-    render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={onRestart} />);
+    render(
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={onRestart} />,
+    );
     (await screen.findByRole('button', { name: /end exam/i })).click();
     expect(onRestart).toHaveBeenCalledTimes(1);
   });
 
   it('never claims unattended 100% accuracy anywhere on this screen', async () => {
     const { container } = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/scan the answer key sheet first/i);
     const text = container.textContent?.toLowerCase() ?? '';
@@ -663,7 +785,7 @@ describe('ExamScanFlow', () => {
     });
     useSheetReaderMock.mockReturnValue(allAnswered(20, 0));
     const result = render(
-      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />,
+      <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
     );
     await screen.findByText(/key captured/i);
     return result;
@@ -766,7 +888,9 @@ describe('ExamScanFlow', () => {
       useSheetReaderMock.mockReturnValue(
         readOutcome(allAnswered(20, 0).result.questions, [{ outcome: 'answered', optionIndex: 9 }]),
       );
-      rerender(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+      rerender(
+        <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+      );
       await screen.findByText(/roll #9/i);
 
       detectAndReadSheetMock
@@ -872,7 +996,9 @@ describe('ExamScanFlow', () => {
       // No captureKey() here -- the batch itself supplies the key, from
       // the component's very first render, proving the loop drives
       // applyReadResult's capture-key branch too, not just scan-students.
-      render(<ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} onRestart={vi.fn()} />);
+      render(
+        <ExamScanFlow examTitle="Quiz" geometry={GEOMETRY} roster={null} onRestart={vi.fn()} />,
+      );
       await screen.findByText(/scan the answer key sheet first/i);
 
       detectAndReadSheetMock

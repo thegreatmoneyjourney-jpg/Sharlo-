@@ -581,7 +581,18 @@ const api: DetectionHarnessApi = {
       width: outcome.dewarpedCanvas.width,
       height: outcome.dewarpedCanvas.height,
     };
-    const specs = buildReviewItemSpecs(outcome.result, outcome.mappedGeometry, rollRead, frameSize);
+    // M3-007 changed buildReviewItemSpecs's 3rd param from a raw
+    // RollNumberReadResult to a plain reason (or null) -- this harness has
+    // no roster concept, so "unreadable" is the only case that still
+    // needs review, matching the exact pre-M3-007 behavior.
+    const rollNumberReview =
+      rollRead.status === 'unreadable' ? ({ reason: 'unread' } as const) : null;
+    const specs = buildReviewItemSpecs(
+      outcome.result,
+      outcome.mappedGeometry,
+      rollNumberReview,
+      frameSize,
+    );
 
     const crops: ReviewCropResult[] = specs.map((itemSpec) => {
       const dataUrl = cropRegionToDataUrl(outcome.dewarpedCanvas!, itemSpec.cropRect);
