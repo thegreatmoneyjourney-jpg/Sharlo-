@@ -10,7 +10,7 @@ describe('encryptEnvelope / decryptEnvelope', () => {
     const masterKey = randomMasterKey();
     const content = { studentName: 'Aisha', rollNumber: '17', marks: [1, 0, 1, 1] };
 
-    const envelope = await encryptEnvelope(masterKey, 'examResults', 'record-1', content);
+    const envelope = await encryptEnvelope(masterKey, 'examResults', 'record-1', content, 1);
     const decrypted = await decryptEnvelope(masterKey, envelope);
 
     expect(decrypted).toEqual(content);
@@ -18,7 +18,7 @@ describe('encryptEnvelope / decryptEnvelope', () => {
 
   it('produces the expected envelope shape: schemaVersion, type, recordId, and a hex ciphertext', async () => {
     const masterKey = randomMasterKey();
-    const envelope = await encryptEnvelope(masterKey, 'examResults', 'record-1', { a: 1 });
+    const envelope = await encryptEnvelope(masterKey, 'examResults', 'record-1', { a: 1 }, 1);
 
     expect(envelope.schemaVersion).toBe(1);
     expect(envelope.type).toBe('examResults');
@@ -33,17 +33,25 @@ describe('encryptEnvelope / decryptEnvelope', () => {
 
   it('never leaks the plaintext content into the envelope', async () => {
     const masterKey = randomMasterKey();
-    const envelope = await encryptEnvelope(masterKey, 'examResults', 'record-1', {
-      studentName: 'a very distinctive plaintext name',
-    });
+    const envelope = await encryptEnvelope(
+      masterKey,
+      'examResults',
+      'record-1',
+      { studentName: 'a very distinctive plaintext name' },
+      1,
+    );
 
     expect(JSON.stringify(envelope)).not.toContain('a very distinctive plaintext name');
   });
 
   it('fails to decrypt with the wrong master key, never returning partial/garbage output', async () => {
-    const envelope = await encryptEnvelope(randomMasterKey(), 'examResults', 'record-1', {
-      a: 1,
-    });
+    const envelope = await encryptEnvelope(
+      randomMasterKey(),
+      'examResults',
+      'record-1',
+      { a: 1 },
+      1,
+    );
     await expect(decryptEnvelope(randomMasterKey(), envelope)).rejects.toThrow();
   });
 

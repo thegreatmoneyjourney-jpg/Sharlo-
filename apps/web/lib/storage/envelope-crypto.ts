@@ -27,8 +27,6 @@ import type { StoredEnvelope } from './local-envelope-store';
  * pattern from `M3-005`'s auth work.
  */
 
-const CURRENT_SCHEMA_VERSION = 1;
-
 function encodeJson(content: unknown): Bytes {
   return new Uint8Array(new TextEncoder().encode(JSON.stringify(content)));
 }
@@ -45,16 +43,24 @@ function decodeJson<T>(bytes: Bytes): T {
  * same `recordId` so the storage layer overwrites it rather than creating
  * a duplicate; a brand-new record's caller mints a fresh one itself
  * (`crypto.randomUUID()`).
+ *
+ * `schemaVersion` is the caller's own content-shape version, not a single
+ * version shared across every envelope `type` (`M3-013`, `ARCHITECTURE.md`
+ * §14) — this module stays content-agnostic, so each type's own storage
+ * module (`exam-results.ts`, `roster-store.ts`, ...) owns its own
+ * `CURRENT_..._SCHEMA_VERSION` constant and passes it in explicitly,
+ * rather than this module guessing a version that means nothing to it.
  */
 export async function encryptEnvelope(
   masterKey: Bytes,
   type: string,
   recordId: string,
   content: unknown,
+  schemaVersion: number,
 ): Promise<StoredEnvelope> {
   const blob = await aesGcmEncrypt(masterKey, encodeJson(content));
   return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion,
     type,
     recordId,
     ciphertext: bytesToHex(blob),

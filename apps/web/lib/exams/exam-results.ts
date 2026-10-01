@@ -1,8 +1,10 @@
 import type { QuestionResult } from '../scanning/bubble-fill';
 import type { ScoredSheet } from '../scanning/score-answers';
 import { decryptEnvelope, encryptEnvelope } from '../storage/envelope-crypto';
+import { migrateEnvelopeContent } from '../storage/envelope-migration';
 import type { Bytes } from '../crypto/encoding';
 import type { EnvelopeStore } from '../storage/envelope-store';
+import type { StoredEnvelope } from '../storage/local-envelope-store';
 
 /**
  * `M3-008` (`FR-EXAM-01`/`03`, `FR-RESULTS-01`/`02`) — the first task to
@@ -47,6 +49,12 @@ export interface ExamResults {
 
 const EXAM_RESULTS_ENVELOPE_TYPE = 'examResults';
 
+/** `M3-013`: this type's own content-shape version — bump this and add a `EXAM_RESULTS_MIGRATIONS[N]` entry when `ExamResultsContent`'s shape ever changes; never touch `envelope-crypto.ts`'s generic encryption to do it. */
+const CURRENT_EXAM_RESULTS_SCHEMA_VERSION = 1;
+
+/** No migrations registered yet — nothing has ever needed one. Kept here, not inlined at the call site, so the next real migration's `[N]: fn` entry is the only addition a future change needs to make. */
+const EXAM_RESULTS_MIGRATIONS: Record<number, (content: unknown) => unknown> = {};
+
 interface ExamResultsContent {
   title: string;
   questionCount: number;
@@ -72,8 +80,23 @@ export async function saveExamResults(
     EXAM_RESULTS_ENVELOPE_TYPE,
     recordId,
     content satisfies ExamResultsContent,
+    CURRENT_EXAM_RESULTS_SCHEMA_VERSION,
   );
   await store.putEnvelope(envelope);
+}
+
+async function decryptAndMigrateExamResults(
+  masterKey: Bytes,
+  envelope: StoredEnvelope,
+): Promise<ExamResults> {
+  const raw = await decryptEnvelope<unknown>(masterKey, envelope);
+  const content = migrateEnvelopeContent<ExamResultsContent>(
+    envelope.schemaVersion,
+    CURRENT_EXAM_RESULTS_SCHEMA_VERSION,
+    raw,
+    EXAM_RESULTS_MIGRATIONS,
+  );
+  return toExamResults(envelope.recordId, content);
 }
 
 /** Every saved exam on this account — for the `/exams` list page. */
@@ -83,10 +106,7 @@ export async function listExamResults(
 ): Promise<ExamResults[]> {
   const envelopes = await store.listEnvelopesByType(EXAM_RESULTS_ENVELOPE_TYPE);
   return Promise.all(
-    envelopes.map(async (envelope) => {
-      const content = await decryptEnvelope<ExamResultsContent>(masterKey, envelope);
-      return toExamResults(envelope.recordId, content);
-    }),
+    envelopes.map((envelope) => decryptAndMigrateExamResults(masterKey, envelope)),
   );
 }
 
@@ -97,6 +117,5 @@ export async function loadExamResults(
 ): Promise<ExamResults | undefined> {
   const envelope = await store.getEnvelope(recordId);
   if (!envelope) return undefined;
-  const content = await decryptEnvelope<ExamResultsContent>(masterKey, envelope);
-  return toExamResults(recordId, content);
+  return decryptAndMigrateExamResults(masterKey, envelope);
 }
