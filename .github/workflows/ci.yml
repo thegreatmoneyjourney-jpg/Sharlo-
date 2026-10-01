@@ -148,5 +148,6 @@ jobs:
           APP_DB_ROLE_PASSWORD: ci_check
           INTEGRATION_CREDENTIALS_KEY: ci_check
           COOKIE_SIGNING_SECRET: ci_check
+          GOOGLE_PICKER_API_KEY: ci_check
           APP_DOMAIN: ci-check.example.com
           API_DOMAIN: ci-check-api.example.com
