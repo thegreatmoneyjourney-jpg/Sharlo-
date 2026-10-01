@@ -1,6 +1,8 @@
 import { encryptEnvelope, decryptEnvelope } from '../storage/envelope-crypto';
+import { migrateEnvelopeContent } from '../storage/envelope-migration';
 import type { Bytes } from '../crypto/encoding';
 import type { EnvelopeStore } from '../storage/envelope-store';
+import type { StoredEnvelope } from '../storage/local-envelope-store';
 import type { Roster, RosterEntry } from './roster';
 
 /**
@@ -20,6 +22,12 @@ import type { Roster, RosterEntry } from './roster';
 
 const ROSTER_ENVELOPE_TYPE = 'roster';
 
+/** `M3-013`: this type's own content-shape version — bump this and add a `ROSTER_MIGRATIONS[N]` entry when `RosterContent`'s shape ever changes; never touch `envelope-crypto.ts`'s generic encryption to do it. */
+const CURRENT_ROSTER_SCHEMA_VERSION = 1;
+
+/** No migrations registered yet — nothing has ever needed one. Kept here, not inlined at the call site, so the next real migration's `[N]: fn` entry is the only addition a future change needs to make. */
+const ROSTER_MIGRATIONS: Record<number, (content: unknown) => unknown> = {};
+
 interface RosterContent {
   className: string;
   entries: RosterEntry[];
@@ -35,22 +43,34 @@ export async function saveRoster(
   masterKey: Bytes,
   roster: Roster,
 ): Promise<void> {
-  const envelope = await encryptEnvelope(masterKey, ROSTER_ENVELOPE_TYPE, roster.recordId, {
-    className: roster.className,
-    entries: roster.entries,
-  } satisfies RosterContent);
+  const envelope = await encryptEnvelope(
+    masterKey,
+    ROSTER_ENVELOPE_TYPE,
+    roster.recordId,
+    { className: roster.className, entries: roster.entries } satisfies RosterContent,
+    CURRENT_ROSTER_SCHEMA_VERSION,
+  );
   await store.putEnvelope(envelope);
+}
+
+async function decryptAndMigrateRoster(
+  masterKey: Bytes,
+  envelope: StoredEnvelope,
+): Promise<Roster> {
+  const raw = await decryptEnvelope<unknown>(masterKey, envelope);
+  const content = migrateEnvelopeContent<RosterContent>(
+    envelope.schemaVersion,
+    CURRENT_ROSTER_SCHEMA_VERSION,
+    raw,
+    ROSTER_MIGRATIONS,
+  );
+  return toRoster(envelope.recordId, content);
 }
 
 /** Every class's roster this account has saved — for the "pick an existing class" step of exam setup. */
 export async function listRosters(store: EnvelopeStore, masterKey: Bytes): Promise<Roster[]> {
   const envelopes = await store.listEnvelopesByType(ROSTER_ENVELOPE_TYPE);
-  return Promise.all(
-    envelopes.map(async (envelope) => {
-      const content = await decryptEnvelope<RosterContent>(masterKey, envelope);
-      return toRoster(envelope.recordId, content);
-    }),
-  );
+  return Promise.all(envelopes.map((envelope) => decryptAndMigrateRoster(masterKey, envelope)));
 }
 
 export async function loadRoster(
@@ -60,6 +80,5 @@ export async function loadRoster(
 ): Promise<Roster | undefined> {
   const envelope = await store.getEnvelope(recordId);
   if (!envelope) return undefined;
-  const content = await decryptEnvelope<RosterContent>(masterKey, envelope);
-  return toRoster(recordId, content);
+  return decryptAndMigrateRoster(masterKey, envelope);
 }
