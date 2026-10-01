@@ -9,6 +9,7 @@ import {
 } from '@/lib/exams/results-grid-ops';
 import type { StudentResult } from '@/lib/exams/exam-results';
 import type { QuestionScore } from '@/lib/scanning/score-answers';
+import { OUTCOME_LABELS } from '@/lib/exams/outcome-labels';
 
 const CELL_INPUT_CLASSES =
   'w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100';
@@ -17,13 +18,6 @@ const HEADER_CELL_CLASSES =
 const BODY_CELL_CLASSES = 'px-2 py-1 align-middle';
 const SECONDARY_BUTTON_CLASSES =
   'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
-
-const OUTCOME_LABELS: Record<QuestionScore['outcome'], string> = {
-  correct: 'Correct',
-  incorrect: 'Incorrect',
-  'needs-review': 'Needs review',
-  excluded: 'Excluded',
-};
 
 /**
  * `M3-008`/`FR-IMPORT-06` — the reusable editable-grid component: name/
