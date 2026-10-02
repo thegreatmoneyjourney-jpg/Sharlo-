@@ -33,6 +33,10 @@ export interface SchoolSummary {
   name: string;
   driveLocationType: DriveLocationType;
   driveLocationId: string;
+  /** `M3-017` — not a secret (cleartext, same reasoning as `schools.admin_x25519_public_key` itself); returned on every fetch, not just at creation, so the principal dashboard can unwrap the matching private key on a fresh page load. */
+  adminX25519PublicKey: string;
+  /** `M3-017` — ciphertext wrapped under the admin's own master key; safe to return to this admin's own authenticated session, same reasoning as `users.wrapped_master_key_by_passphrase` being returned via `/account/encryption-params`. */
+  adminX25519WrappedPrivateKey: string;
 }
 
 const schoolSummaryColumns = {
@@ -40,6 +44,8 @@ const schoolSummaryColumns = {
   name: schools.name,
   driveLocationType: schools.driveLocationType,
   driveLocationId: schools.driveLocationId,
+  adminX25519PublicKey: schools.adminX25519PublicKey,
+  adminX25519WrappedPrivateKey: schools.adminX25519WrappedPrivateKey,
 };
 
 /**

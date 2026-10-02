@@ -165,6 +165,10 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('school routes', () => {
         name: body.name,
         driveLocationType: body.driveLocationType,
         driveLocationId: body.driveLocationId,
+        // `M3-017` — round-trips the admin's own keypair material back,
+        // not just at creation but on every later fetch (below) too.
+        adminX25519PublicKey: body.adminX25519PublicKey,
+        adminX25519WrappedPrivateKey: body.adminX25519WrappedPrivateKey,
       });
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/i);
 
@@ -185,6 +189,8 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('school routes', () => {
             name: body.name,
             driveLocationType: body.driveLocationType,
             driveLocationId: body.driveLocationId,
+            adminX25519PublicKey: body.adminX25519PublicKey,
+            adminX25519WrappedPrivateKey: body.adminX25519WrappedPrivateKey,
           },
         ],
       });

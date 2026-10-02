@@ -101,6 +101,29 @@ jobs:
         run: node scripts/check-oauth-scope.mjs
         working-directory: apps/api
 
+  no-decrypt-in-backend-guard:
+    name: Backend decrypt-capability guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # M3-017 (FR-SCHOOL-04, CLAUDE.md's "no plaintext student data on
+      # our servers... ever" non-negotiable): a dedicated, standalone
+      # check that apps/api never depends on libsodium-wrappers(-sumo) —
+      # the only library capable of opening a sealed school-result copy
+      # anywhere in this monorepo — same reasoning as the OAuth scope
+      # guard above, its own named CI job so a PR that adds this
+      # dependency and also quietly edits/removes a regular vitest
+      # assertion in the same diff still can't pass CI silently. No
+      # dependency install needed — the script only reads package.json.
+      - name: Check backend has no decrypt-capable dependency
+        run: node scripts/check-no-decrypt-in-backend.mjs
+        working-directory: apps/api
+
   secret-scanning:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest

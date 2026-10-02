@@ -21,6 +21,9 @@ export interface SchoolSummary {
   name: string;
   driveLocationType: DriveLocationType;
   driveLocationId: string;
+  /** `M3-017` — the admin's X25519 keypair material, returned on every fetch (not just at creation) so the principal dashboard can unwrap the private key on a fresh page load. `adminX25519PublicKey` is cleartext (not a secret); `adminX25519WrappedPrivateKey` is ciphertext wrapped under this admin's own master key. */
+  adminX25519PublicKey: string;
+  adminX25519WrappedPrivateKey: string;
 }
 
 export async function fetchMySchools(): Promise<SchoolSummary[]> {

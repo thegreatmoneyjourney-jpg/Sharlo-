@@ -23,6 +23,8 @@ const SCHOOL = {
   name: 'Riverside Academy',
   driveLocationType: 'folder' as const,
   driveLocationId: 'folder-abc',
+  adminX25519PublicKey: 'fixture-public-key-not-real',
+  adminX25519WrappedPrivateKey: 'fixture-ciphertext-not-real',
 };
 
 beforeEach(() => {

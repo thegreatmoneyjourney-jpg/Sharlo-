@@ -153,6 +153,12 @@ function NewSchoolForm({ masterKey }: { masterKey: Bytes }) {
             You already manage a school
           </h1>
           <p className="text-sm text-zinc-700 dark:text-zinc-300">{loadState.school.name}</p>
+          <a
+            href="/school/results"
+            className="text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          >
+            View school-wide results
+          </a>
         </div>
         <SchoolMembersPanel school={loadState.school} />
       </div>
@@ -164,6 +170,12 @@ function NewSchoolForm({ masterKey }: { masterKey: Bytes }) {
         <div className="flex flex-col gap-2">
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">School created</h1>
           <p className="text-sm text-zinc-700 dark:text-zinc-300">{created.name} is ready.</p>
+          <a
+            href="/school/results"
+            className="text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          >
+            View school-wide results
+          </a>
         </div>
         <SchoolMembersPanel school={created} />
       </div>
