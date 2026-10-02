@@ -269,6 +269,10 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('school member routes', () =
         driveLocationType: 'folder',
         driveLocationId: 'fixture-drive-folder-id',
         driveAccessGranted: false,
+        // `M3-016` — denormalized from the school's own row at insert
+        // time (`createSchoolFor`'s `adminX25519PublicKey: 'ddeeff'`
+        // above), not re-read live from `schools`.
+        adminX25519PublicKey: 'ddeeff',
       });
 
       const confirmResponse = await app.inject({

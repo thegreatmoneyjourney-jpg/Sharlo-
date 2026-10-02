@@ -1,0 +1,1 @@
+ALTER TABLE "school_members" ADD COLUMN "admin_x25519_public_key" text NOT NULL;

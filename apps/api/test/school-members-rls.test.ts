@@ -13,13 +13,16 @@ const APP_DATABASE_URL = process.env.APP_DATABASE_URL;
 const APP_DB_ROLE_PASSWORD = process.env.APP_DB_ROLE_PASSWORD ?? 'app_user_dev_password';
 
 /**
- * `M3-015`'s RLS proof for `school_members`, plus `schools`' own new
- * `schools_select_by_membership` policy this task adds. `school_members`'
+ * `M3-015`'s RLS proof for `school_members`. `school_members`'
  * admin policy is this codebase's first subquery-based one (every earlier
  * policy compares a column directly to a session GUC) — specifically
  * exercised here against real Postgres, not just reasoned through, since a
  * subquery crossing two RLS-protected tables is exactly the kind of thing
- * that looks right on paper and isn't.
+ * that looks right on paper and isn't. (An earlier draft of this task
+ * attempted a `schools_select_by_membership` policy on `schools` itself —
+ * abandoned after hitting real Postgres's circular-policy-reference
+ * rejection, see `schema.ts`'s own doc comment on `schoolMembers`; the
+ * last test below confirms `schools` still has no teacher-facing policy.)
  *
  * Skipped (not failed) without a real Postgres — see `rls.test.ts` for why.
  */
@@ -59,6 +62,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('Postgres RLS: school_member
       email,
       driveLocationType: 'folder' as const,
       driveLocationId: `fixture-drive-folder-${schoolId}`,
+      adminX25519PublicKey: 'fixture-public-key-not-real',
     };
   }
 

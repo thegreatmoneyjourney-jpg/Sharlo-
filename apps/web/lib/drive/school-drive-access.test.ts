@@ -8,6 +8,7 @@ const GRANTED_MEMBERSHIP: MyMembership = {
   driveLocationType: 'folder',
   driveLocationId: 'folder-abc',
   driveAccessGranted: true,
+  adminX25519PublicKey: 'fixture-public-key-not-real',
 };
 
 describe('ensureSchoolDriveAccess', () => {

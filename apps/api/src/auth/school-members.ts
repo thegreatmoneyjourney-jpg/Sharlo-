@@ -85,6 +85,7 @@ export async function addTeacherToSchool(
         .select({
           driveLocationType: schools.driveLocationType,
           driveLocationId: schools.driveLocationId,
+          adminX25519PublicKey: schools.adminX25519PublicKey,
         })
         .from(schools)
         .where(eq(schools.id, schoolId));
@@ -100,6 +101,7 @@ export async function addTeacherToSchool(
           email: teacherEmail,
           driveLocationType: school.driveLocationType,
           driveLocationId: school.driveLocationId,
+          adminX25519PublicKey: school.adminX25519PublicKey,
         })
         .returning(memberSummaryColumns);
       return { outcome: 'added', member: member! };
@@ -135,6 +137,8 @@ export interface MyMembership {
   driveLocationType: 'shared_drive' | 'folder';
   driveLocationId: string;
   driveAccessGranted: boolean;
+  /** `M3-016` — the admin's X25519 public key, denormalized onto this row at insert time; a teacher's client needs this to seal a school-key copy of an exam result (`sealToPublicKey`). Not a secret (same reasoning as `schools.admin_x25519_public_key` itself). */
+  adminX25519PublicKey: string;
 }
 
 /** The signed-in teacher's own membership, if they have one — `school_members_self_select` scopes this to exactly their own row, never another teacher's. */
@@ -147,6 +151,7 @@ export async function getMembershipForUser(db: Db, userId: string): Promise<MyMe
         driveLocationType: schoolMembers.driveLocationType,
         driveLocationId: schoolMembers.driveLocationId,
         driveAccessGranted: schoolMembers.driveAccessGranted,
+        adminX25519PublicKey: schoolMembers.adminX25519PublicKey,
       })
       .from(schoolMembers)
       .where(eq(schoolMembers.userId, userId)),

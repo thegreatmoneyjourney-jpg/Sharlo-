@@ -4,13 +4,19 @@ import NewExamClient from './new-exam-client';
 import type { Roster } from '@/lib/roster/roster';
 import type { Mode } from './exam-scan-mode';
 
-const { examScanFlowMock, rosterPickerMock, getEnvelopeStoreMock, saveExamResultsMock } =
-  vi.hoisted(() => ({
-    examScanFlowMock: vi.fn(),
-    rosterPickerMock: vi.fn(),
-    getEnvelopeStoreMock: vi.fn(),
-    saveExamResultsMock: vi.fn(),
-  }));
+const {
+  examScanFlowMock,
+  rosterPickerMock,
+  getEnvelopeStoreMock,
+  saveExamResultsMock,
+  syncExamResultsToSchoolMock,
+} = vi.hoisted(() => ({
+  examScanFlowMock: vi.fn(),
+  rosterPickerMock: vi.fn(),
+  getEnvelopeStoreMock: vi.fn(),
+  saveExamResultsMock: vi.fn(),
+  syncExamResultsToSchoolMock: vi.fn(),
+}));
 
 const FAKE_MODE_WITH_STUDENTS: Mode = {
   phase: 'scan-students',
@@ -90,6 +96,14 @@ vi.mock('./roster-picker', () => ({
 }));
 vi.mock('@/lib/storage/envelope-store', () => ({ getEnvelopeStore: getEnvelopeStoreMock }));
 vi.mock('@/lib/exams/exam-results', () => ({ saveExamResults: saveExamResultsMock }));
+// `M3-016` — this file proves `NewExamClient`'s own save/redirect wiring,
+// not `syncExamResultsToSchool`'s own branches (covered in full by
+// `lib/exams/school-result-sync.test.ts`); defaults to the common
+// "not a school member" outcome so every pre-existing test below is
+// unaffected by this addition.
+vi.mock('@/lib/exams/school-result-sync', () => ({
+  syncExamResultsToSchool: syncExamResultsToSchoolMock,
+}));
 
 const FAKE_STORE = { name: 'fake-store' };
 
@@ -98,6 +112,7 @@ beforeEach(() => {
   rosterPickerMock.mockReset();
   getEnvelopeStoreMock.mockReset().mockResolvedValue(FAKE_STORE);
   saveExamResultsMock.mockReset().mockResolvedValue(undefined);
+  syncExamResultsToSchoolMock.mockReset().mockResolvedValue({ attempted: false });
   // jsdom doesn't implement navigation -- window.location.href stays a
   // plain, settable string here (same workaround signin-client.test.tsx
   // already established) so the post-save redirect can be asserted on.
@@ -205,6 +220,40 @@ describe('NewExamClient', () => {
       rosterId: null,
       students: FAKE_MODE_WITH_STUDENTS.students,
     });
+    await waitFor(() => expect(window.location.href).toBe(`/exams/${savedExam.recordId}`));
+  });
+
+  it('attempts a school-key sync after the individual save, with the same saved exam (M3-016)', async () => {
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end exam \(with students\)/i }));
+    await screen.findByText(/1 student scanned/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /save and view results/i }));
+
+    await waitFor(() => expect(syncExamResultsToSchoolMock).toHaveBeenCalledTimes(1));
+    const [syncedExam] = syncExamResultsToSchoolMock.mock.calls[0]!;
+    const [, , savedExam] = saveExamResultsMock.mock.calls[0]!;
+    expect(syncedExam).toBe(savedExam); // the exact same object saveExamResults was called with
+  });
+
+  it('still redirects to the results page even when the school-key sync fails (M3-016, never blocking)', async () => {
+    syncExamResultsToSchoolMock.mockResolvedValue({
+      attempted: true,
+      ok: false,
+      error: new Error('Drive API request failed: 500'),
+    });
+    render(<NewExamClient />);
+    fireEvent.change(screen.getByLabelText(/exam title/i), { target: { value: 'Midterm' } });
+    fireEvent.click(screen.getByRole('button', { name: /start scanning the answer key/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end exam \(with students\)/i }));
+    await screen.findByText(/1 student scanned/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /save and view results/i }));
+
+    await waitFor(() => expect(saveExamResultsMock).toHaveBeenCalledTimes(1));
+    const [, , savedExam] = saveExamResultsMock.mock.calls[0]!;
     await waitFor(() => expect(window.location.href).toBe(`/exams/${savedExam.recordId}`));
   });
 
