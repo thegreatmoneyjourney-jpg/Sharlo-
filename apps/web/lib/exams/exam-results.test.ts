@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { loadExamResults, listExamResults, saveExamResults } from './exam-results';
+import {
+  loadExamResults,
+  listExamResults,
+  saveExamResults,
+  sealExamResultsForSchool,
+  unsealExamResultsForSchool,
+  SCHOOL_EXAM_RESULTS_SEALED_TYPE,
+} from './exam-results';
+import { bytesToHex } from '../crypto/encoding';
+import { generateX25519KeyPair } from '../crypto/x25519';
 import type { EnvelopeStore } from '../storage/envelope-store';
 import type { StoredEnvelope } from '../storage/local-envelope-store';
 import type { ExamResults } from './exam-results';
@@ -106,5 +115,50 @@ describe('exam-results store', () => {
     await saveExamResults(store, generateTestMasterKey(), makeExam());
 
     await expect(loadExamResults(store, generateTestMasterKey(), 'exam-1')).rejects.toThrow();
+  });
+});
+
+describe('sealExamResultsForSchool / unsealExamResultsForSchool', () => {
+  it('round-trips an exam through seal (teacher side) then unseal (admin side) with the matching keypair', async () => {
+    const adminKeyPair = await generateX25519KeyPair();
+    const exam = makeExam();
+
+    const sealed = await sealExamResultsForSchool(bytesToHex(adminKeyPair.publicKey), exam);
+    const unsealed = await unsealExamResultsForSchool(adminKeyPair, sealed);
+
+    expect(unsealed).toEqual(exam);
+  });
+
+  it('tags the sealed record with the school-specific type, the recordId, and the current schema version', async () => {
+    const adminKeyPair = await generateX25519KeyPair();
+    const exam = makeExam({ recordId: 'exam-42' });
+
+    const sealed = await sealExamResultsForSchool(bytesToHex(adminKeyPair.publicKey), exam);
+
+    expect(sealed.type).toBe(SCHOOL_EXAM_RESULTS_SEALED_TYPE);
+    expect(sealed.type).not.toBe('examResults'); // never confusable with the individual envelope's own type tag
+    expect(sealed.recordId).toBe('exam-42');
+    expect(sealed.schemaVersion).toBe(1);
+  });
+
+  it("never leaks the plaintext exam content into the sealed record's own ciphertext field", async () => {
+    const adminKeyPair = await generateX25519KeyPair();
+    const exam = makeExam({ title: 'a very distinctive exam title' });
+
+    const sealed = await sealExamResultsForSchool(bytesToHex(adminKeyPair.publicKey), exam);
+
+    expect(sealed.sealedCiphertext).toMatch(/^[0-9a-f]+$/i);
+    expect(sealed.sealedCiphertext).not.toContain('distinctive');
+  });
+
+  it("fails to unseal with a different admin's keypair, never returning partial/garbage output", async () => {
+    const realAdminKeyPair = await generateX25519KeyPair();
+    const wrongAdminKeyPair = await generateX25519KeyPair();
+    const sealed = await sealExamResultsForSchool(
+      bytesToHex(realAdminKeyPair.publicKey),
+      makeExam(),
+    );
+
+    await expect(unsealExamResultsForSchool(wrongAdminKeyPair, sealed)).rejects.toThrow();
   });
 });

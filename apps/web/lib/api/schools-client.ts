@@ -123,6 +123,8 @@ export interface MyMembership {
   driveLocationType: DriveLocationType;
   driveLocationId: string;
   driveAccessGranted: boolean;
+  /** `M3-016` — the admin's X25519 public key (hex), denormalized onto `school_members` at insert time; lets this teacher's client seal an exam-result copy to the admin without reading `schools` directly. Cleartext, not a secret — same reasoning as `schools.admin_x25519_public_key` itself. */
+  adminX25519PublicKey: string;
 }
 
 export async function fetchMyMembership(): Promise<MyMembership | null> {

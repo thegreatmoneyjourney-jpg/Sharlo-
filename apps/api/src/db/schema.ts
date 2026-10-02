@@ -467,6 +467,12 @@ export const schools = pgTable(
  * admin's `adminX25519PublicKey` (`M3-016`) should follow the identical
  * pattern — denormalize onto `school_members` at insert time — rather
  * than re-attempting a teacher-facing policy on `schools` itself.
+ * `M3-016` does exactly this: `adminX25519PublicKey` below is the admin's
+ * public key (cleartext, same as `schools`' own copy — not a secret, see
+ * that table's doc comment), copied once at `addTeacherToSchool` insert
+ * time, which is what lets a teacher's client seal an exam-result copy
+ * to the admin (`sealToPublicKey`, `x25519.ts`) without ever reading
+ * `schools` directly.
  *
  * `driveAccessGranted` records the one-time Google Picker step
  * (`FR-SCHOOL-02`, `ADR-0010`'s "Access-grant flow" step 3) — `drive.file`
@@ -515,6 +521,13 @@ export const schoolMembers = pgTable(
     // email the admin looked the teacher up by (`addTeacherToSchool`,
     // `M3-015`), never re-read live.
     email: text('email').notNull(),
+    // Denormalized copy of `schools.admin_x25519_public_key` at insert
+    // time (`M3-016`) — same reasoning as the two columns above, and
+    // same cleartext-is-correct reasoning as `schools`' own copy (not a
+    // secret; see that table's doc comment). Lets a teacher's client
+    // seal a school-key copy of an exam result (`sealToPublicKey`,
+    // `lib/crypto/x25519.ts`) to the admin without a cross-table RLS read.
+    adminX25519PublicKey: text('admin_x25519_public_key').notNull(),
     driveAccessGranted: boolean('drive_access_granted').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -11,6 +11,7 @@ import type { Roster } from '@/lib/roster/roster';
 import { getEnvelopeStore } from '@/lib/storage/envelope-store';
 import { saveExamResults } from '@/lib/exams/exam-results';
 import type { ExamResults } from '@/lib/exams/exam-results';
+import { syncExamResultsToSchool } from '@/lib/exams/school-result-sync';
 import type { Bytes } from '@/lib/crypto/encoding';
 import { ExamScanFlow } from './exam-scan-flow';
 import type { Mode } from './exam-scan-mode';
@@ -64,6 +65,20 @@ function SaveExamStep({
         createdAt: new Date().toISOString(),
       };
       await saveExamResults(store, masterKey, exam);
+      // `M3-016` — a best-effort, non-blocking school-copy write: the
+      // teacher's own save above has already durably succeeded by this
+      // point, so a school-copy problem (not a member yet, Picker step
+      // not done, a transient Drive error) must never hold up or fail
+      // *this* save — `syncExamResultsToSchool` never throws, and the
+      // "not eligible yet" cases are already surfaced by the standing
+      // `SchoolDriveAccessBanner` on every page, including wherever this
+      // redirects to next. A genuine write failure is logged for
+      // visibility, not surfaced inline — see docs/reports/SHARLO-M3-016.md
+      // for why building retry UX for this edge case is deferred.
+      const schoolSync = await syncExamResultsToSchool(exam);
+      if (schoolSync.attempted && !schoolSync.ok) {
+        console.error('Failed to write school-key copy of exam results:', schoolSync.error);
+      }
       onSaved(exam.recordId);
     } catch {
       setError("Couldn't save this exam. Please try again.");

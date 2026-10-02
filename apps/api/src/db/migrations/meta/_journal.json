@@ -64,6 +64,13 @@
       "when": 1790947928010,
       "tag": "0008_certain_typhoid_mary",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790950468908,
+      "tag": "0009_majestic_shocker",
+      "breakpoints": true
     }
   ]
 }
