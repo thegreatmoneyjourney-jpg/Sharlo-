@@ -2,13 +2,17 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SchoolMembersPanel } from './school-members-panel';
 
-const { fetchSchoolMembersMock, submitAddTeacherMock, shareSchoolContainerMock } = vi.hoisted(
-  () => ({
-    fetchSchoolMembersMock: vi.fn(),
-    submitAddTeacherMock: vi.fn(),
-    shareSchoolContainerMock: vi.fn(),
-  }),
-);
+const {
+  fetchSchoolMembersMock,
+  submitAddTeacherMock,
+  shareSchoolContainerMock,
+  removeTeacherFromSchoolMock,
+} = vi.hoisted(() => ({
+  fetchSchoolMembersMock: vi.fn(),
+  submitAddTeacherMock: vi.fn(),
+  shareSchoolContainerMock: vi.fn(),
+  removeTeacherFromSchoolMock: vi.fn(),
+}));
 
 vi.mock('@/lib/api/schools-client', () => ({
   fetchSchoolMembers: fetchSchoolMembersMock,
@@ -16,6 +20,9 @@ vi.mock('@/lib/api/schools-client', () => ({
 }));
 vi.mock('@/lib/drive/share-school-container', () => ({
   shareSchoolContainer: shareSchoolContainerMock,
+}));
+vi.mock('@/lib/drive/remove-teacher-from-school', () => ({
+  removeTeacherFromSchool: removeTeacherFromSchoolMock,
 }));
 
 const SCHOOL = {
@@ -31,6 +38,7 @@ beforeEach(() => {
   fetchSchoolMembersMock.mockReset().mockResolvedValue([]);
   submitAddTeacherMock.mockReset();
   shareSchoolContainerMock.mockReset().mockResolvedValue(undefined);
+  removeTeacherFromSchoolMock.mockReset();
 });
 
 afterEach(() => {
@@ -111,5 +119,78 @@ describe('SchoolMembersPanel', () => {
 
     expect(await screen.findByText('new@example.com')).toBeInTheDocument();
     expect(await screen.findByText(/couldn't share the drive folder/i)).toBeInTheDocument();
+  });
+
+  describe('removing a teacher', () => {
+    beforeEach(() => {
+      fetchSchoolMembersMock.mockResolvedValue([
+        { id: 'm1', userId: 'u1', email: 'departing@example.com', driveAccessGranted: true },
+      ]);
+    });
+
+    it('requires a confirm click before actually removing', async () => {
+      removeTeacherFromSchoolMock.mockResolvedValue({ transferResults: [], removed: true });
+      render(<SchoolMembersPanel school={SCHOOL} />);
+      await screen.findByText('departing@example.com');
+
+      fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+      expect(removeTeacherFromSchoolMock).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: /confirm remove/i })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm remove/i }));
+      await waitFor(() => expect(removeTeacherFromSchoolMock).toHaveBeenCalledTimes(1));
+      expect(removeTeacherFromSchoolMock).toHaveBeenCalledWith(SCHOOL, {
+        id: 'm1',
+        userId: 'u1',
+        email: 'departing@example.com',
+        driveAccessGranted: true,
+      });
+      await waitFor(() =>
+        expect(screen.queryByText('departing@example.com')).not.toBeInTheDocument(),
+      );
+    });
+
+    it('cancelling the confirm step does not remove the teacher', async () => {
+      render(<SchoolMembersPanel school={SCHOOL} />);
+      await screen.findByText('departing@example.com');
+
+      fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+      expect(removeTeacherFromSchoolMock).not.toHaveBeenCalled();
+      expect(screen.getByText('departing@example.com')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^remove$/i })).toBeInTheDocument();
+    });
+
+    it('surfaces a failed-ownership-transfer notice rather than reporting a flat success', async () => {
+      removeTeacherFromSchoolMock.mockResolvedValue({
+        transferResults: [
+          { fileId: 'f1', fileName: 'Exam key.pdf', outcome: 'transfer_failed', error: '403' },
+        ],
+        removed: true,
+      });
+      render(<SchoolMembersPanel school={SCHOOL} />);
+      await screen.findByText('departing@example.com');
+
+      fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /confirm remove/i }));
+
+      expect(await screen.findByText(/couldn't be transferred automatically/i)).toBeInTheDocument();
+      expect(screen.queryByText('departing@example.com')).not.toBeInTheDocument();
+    });
+
+    it('shows a specific error and keeps the teacher listed if removal throws', async () => {
+      removeTeacherFromSchoolMock.mockRejectedValue(new Error('network error'));
+      render(<SchoolMembersPanel school={SCHOOL} />);
+      await screen.findByText('departing@example.com');
+
+      fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /confirm remove/i }));
+
+      expect(
+        await screen.findByText(/couldn't remove departing@example\.com/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText('departing@example.com')).toBeInTheDocument();
+    });
   });
 });

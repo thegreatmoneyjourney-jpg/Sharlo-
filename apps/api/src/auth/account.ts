@@ -8,6 +8,8 @@ type Db = PostgresJsDatabase<typeof schema>;
 
 export interface AccountInfo {
   authMode: 'google' | 'local_only';
+  /** `M3-018` — the signed-in user's own email, not a secret (they already know it) — needed client-side to identify the admin's own Drive permission entry on a file when attempting a teacher-removal ownership transfer (`attemptOwnershipTransferForDepartingTeacher`). */
+  email: string;
 }
 
 /**
@@ -21,11 +23,14 @@ export interface AccountInfo {
  */
 export async function getAccountInfo(db: Db, userId: string): Promise<AccountInfo> {
   const rows = await withTenantContext(db, userId, (tx) =>
-    tx.select({ authMode: users.authMode }).from(users).where(eq(users.id, userId)),
+    tx
+      .select({ authMode: users.authMode, email: users.email })
+      .from(users)
+      .where(eq(users.id, userId)),
   );
   const row = rows[0];
   if (!row) {
     throw new Error(`getAccountInfo: no users row for authenticated session userId=${userId}`);
   }
-  return { authMode: row.authMode };
+  return { authMode: row.authMode, email: row.email };
 }

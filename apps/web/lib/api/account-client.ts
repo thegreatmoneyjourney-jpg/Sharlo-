@@ -8,6 +8,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 export interface AccountInfoResponse {
   authMode: 'google' | 'local_only';
+  email: string;
 }
 
 export async function fetchAccountInfo(): Promise<AccountInfoResponse> {
