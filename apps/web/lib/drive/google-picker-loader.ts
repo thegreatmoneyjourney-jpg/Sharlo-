@@ -30,6 +30,11 @@ interface PickerView {
   setEnableDrives(enabled: boolean): PickerView;
   setSelectFolderEnabled(enabled: boolean): PickerView;
   setIncludeFolders(include: boolean): PickerView;
+  // `M3-015` — a teacher picking the one resource their admin already
+  // shared with them needs the opposite default from the admin's own
+  // Shared-Drive-creation flow: scope to items *not* owned by the viewer,
+  // so the one relevant shared item isn't lost among their own files.
+  setOwnedByMe(ownedByMe: boolean): PickerView;
 }
 
 interface Picker {

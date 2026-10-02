@@ -4,6 +4,12 @@ import { z } from 'zod';
 import type * as schema from '../db/schema.js';
 import { requireSession } from '../auth/request-session.js';
 import { createSchool, listSchoolsForAdmin } from '../auth/schools.js';
+import {
+  addTeacherToSchool,
+  confirmDriveAccessGranted,
+  getMembershipForUser,
+  listMembersForSchool,
+} from '../auth/school-members.js';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -24,6 +30,12 @@ const createSchoolBodySchema = z.object({
   adminX25519PublicKey: hexStringSchema,
   adminX25519WrappedPrivateKey: hexStringSchema,
 });
+
+const addMemberBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+
+const schoolIdParamsSchema = z.object({ id: z.string().uuid() });
 
 export interface SchoolRoutesOptions {
   db: Db;
@@ -56,5 +68,65 @@ export async function schoolRoutes(app: FastifyInstance, opts: SchoolRoutesOptio
 
     const school = await createSchool(db, session.userId, parsed.data);
     return reply.code(201).send(school);
+  });
+
+  // `M3-015`/`FR-SCHOOL-02` — admin-only (RLS's `school_members_admin_manages_own_school`
+  // is the real enforcement; `addTeacherToSchool` returning `school_not_found`
+  // for a schoolId the caller doesn't own is the graceful surface of that).
+  app.post('/schools/:id/members', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const params = schoolIdParamsSchema.safeParse(req.params);
+    const body = addMemberBodySchema.safeParse(req.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: 'invalid_body' });
+    }
+
+    const result = await addTeacherToSchool(db, session.userId, params.data.id, body.data.email);
+    switch (result.outcome) {
+      case 'added':
+        return reply.code(201).send(result.member);
+      case 'teacher_not_found':
+        return reply.code(404).send({ error: 'teacher_not_found' });
+      case 'school_not_found':
+        return reply.code(404).send({ error: 'school_not_found' });
+      case 'wrong_auth_provider':
+        return reply.code(409).send({ error: 'wrong_auth_provider' });
+      case 'already_member':
+        return reply.code(409).send({ error: 'already_member' });
+    }
+  });
+
+  app.get('/schools/:id/members', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const params = schoolIdParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: 'invalid_params' });
+    }
+
+    const members = await listMembersForSchool(db, session.userId, params.data.id);
+    return reply.code(200).send({ members });
+  });
+
+  // `M3-015`/`FR-SCHOOL-02` — the teacher-facing half: a teacher checks
+  // whether they have a pending school membership and, if so, which Drive
+  // resource the Picker step needs them to select.
+  app.get('/schools/my-membership', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const membership = await getMembershipForUser(db, session.userId);
+    return reply.code(200).send({ membership });
+  });
+
+  app.post('/schools/my-membership/confirm-drive-access', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    await confirmDriveAccessGranted(db, session.userId);
+    return reply.code(204).send();
   });
 }

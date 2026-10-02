@@ -23,6 +23,12 @@ vi.mock('../../require-master-key', () => ({
   RequireMasterKey: ({ children }: { children: (masterKey: Uint8Array) => React.ReactNode }) =>
     children(new Uint8Array(32)),
 }));
+// `SchoolMembersPanel` has its own dedicated test file — mocked here to a
+// trivial stub so these tests stay focused on `NewSchoolClient`'s own
+// create/load states, not the panel's behavior.
+vi.mock('./school-members-panel', () => ({
+  SchoolMembersPanel: () => null,
+}));
 vi.mock('@/lib/api/schools-client', () => ({
   fetchMySchools: fetchMySchoolsMock,
   submitCreateSchool: submitCreateSchoolMock,

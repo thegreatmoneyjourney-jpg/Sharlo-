@@ -80,4 +80,11 @@ export async function grantAppRolePrivileges(sql: Sql): Promise<void> {
   // test (proving cross-tenant isolation holds for those too) ahead of a
   // real M3-015+ flow that needs them for real.
   await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON schools TO app_user`;
+  // M3-015 — admin's policy needs full CRUD (add/remove a member, and the
+  // RLS test exercises update/delete for cross-tenant proof too); the
+  // teacher's own self-select/self-update policies are narrower slices of
+  // this same grant, not a separate one (Postgres privileges are
+  // table-wide — RLS, not the GRANT, is what actually narrows a teacher's
+  // own reach to their own row, per this table's own doc comment).
+  await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON school_members TO app_user`;
 }

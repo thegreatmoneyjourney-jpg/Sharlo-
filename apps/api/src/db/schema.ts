@@ -362,8 +362,11 @@ export const emailOtpCodes = pgTable(
  * tenant identifier here (the `templates`-style "separate FK column, not
  * this table's own `id`" shape `schema.ts`'s own module comments already
  * call out) — a teacher-under-school's own row lives on `users` as
- * always; `school_members` (not built yet, `M3-015`'s own scope) is what
- * will link a teacher to the school they joined.
+ * always; `school_members` (below, `M3-015`) links a teacher to the
+ * school they joined. This table deliberately has no teacher-facing
+ * policy of its own — see `school_members`'s own doc comment for why
+ * (real Postgres RLS recursion, not an oversight) and where a teacher's
+ * reads of school data actually come from instead.
  *
  * Both key-material columns are opaque ciphertext/public-key bytes this
  * table's RLS policy protects the same way `users`' own wrapped-key
@@ -426,14 +429,123 @@ export const schools = pgTable(
     // WITH CHECK when none is given (the same reliance `users`' own
     // self-access policy above already has) — correct here since there's
     // only one access pattern this task needs (an admin's own school rows),
-    // unlike `templates`' own-or-stock split. A teacher-facing SELECT
-    // (reading their own school's public key/Drive location once
-    // `school_members` exists) is `M3-015`'s own policy addition, not
-    // built here — don't assume this table is teacher-readable yet.
+    // unlike `templates`' own-or-stock split.
     pgPolicy('schools_admin_access_only', {
       for: 'all',
       to: 'app_user',
       using: sql`${table.adminUserId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+  ],
+).enableRLS();
+
+/**
+ * `M3-015`/`ADR-0010` — links a teacher (`userId`) to the school they
+ * joined. One row per teacher *ever* (a unique index on `userId` alone,
+ * not a composite `(userId, schoolId)` key) — nothing in `ADR-0010`/
+ * `FR-SCHOOL-*` describes a teacher belonging to two schools at once, so
+ * this table enforces "at most one school per teacher" structurally
+ * rather than leaving it to application code to remember.
+ *
+ * **`schools` deliberately does NOT get a teacher-facing SELECT policy —
+ * found to be impossible, not just unbuilt.** A first attempt gave
+ * `schools` a `schools_select_by_membership` policy subquerying
+ * `school_members`, while `school_members`'s own admin policy (below)
+ * subqueries back into `schools` — real Postgres rejects this with
+ * `ERROR: infinite recursion detected in policy for relation "schools"`
+ * (confirmed against a live instance in `school-members-rls.test.ts`,
+ * not just reasoned through). Postgres's RLS cycle detection is
+ * reference-graph-based, not value-based, so an A→B→A policy reference
+ * between two RLS-protected tables is rejected outright even though the
+ * actual predicates here would terminate. Fixed by never letting a
+ * teacher's RLS-scoped connection read `schools` directly at all:
+ * `driveLocationType`/`driveLocationId` are copied onto each member's own
+ * row below (write-once, at `addTeacherToSchool`/`M3-015`'s own insert
+ * time, from the authoritative `schools` row the admin's own RLS-checked
+ * connection already read) — a teacher gets everything FR-SCHOOL-02's
+ * Picker step needs from their *own* already-safe `school_members` row,
+ * with zero cross-table RLS. A future need for a teacher to read the
+ * admin's `adminX25519PublicKey` (`M3-016`) should follow the identical
+ * pattern — denormalize onto `school_members` at insert time — rather
+ * than re-attempting a teacher-facing policy on `schools` itself.
+ *
+ * `driveAccessGranted` records the one-time Google Picker step
+ * (`FR-SCHOOL-02`, `ADR-0010`'s "Access-grant flow" step 3) — `drive.file`
+ * only grants access to a resource the app didn't create once the user
+ * explicitly selects it via the Picker, which our server can't observe
+ * directly. This column is the server's record of "has the teacher's
+ * browser told us it did that," never itself the real security boundary
+ * (Google's own grant is) — same "not a boundary by itself, the code is"
+ * framing `M3-001`'s `google_sub_lookup` GUC already established.
+ *
+ * `school_members_self_update`'s `WITH CHECK` only restricts `userId`,
+ * not which *other* columns a teacher's own-row update may touch (Postgres
+ * RLS has no column-level USING/CHECK) — deliberately left coarse, the
+ * same "RLS is tenant isolation, application code is the fine-grained
+ * guard" split `sessions_insert_own_only` already relies on: the actual
+ * confirm-access endpoint (`M3-015`'s own API route) never accepts a
+ * client-supplied `schoolId`/`driveLocationType`/`driveLocationId`, so
+ * there's no real path to exploit the extra breadth even though the
+ * policy alone permits it.
+ */
+export const schoolMembers = pgTable(
+  'school_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    schoolId: uuid('school_id')
+      .notNull()
+      .references(() => schools.id),
+    userId: uuid('user_id')
+      .notNull()
+      .unique()
+      .references(() => users.id),
+    // Denormalized copy of the school's own columns, written once at
+    // insert time — see this table's own doc comment above for why
+    // (avoids a teacher-facing policy on `schools` entirely, which real
+    // Postgres rejects as circular). Never updated after insert; if a
+    // school ever changed its Drive container (not a feature that exists),
+    // re-adding affected members would be the mechanism, not an UPDATE.
+    driveLocationType: text('drive_location_type', { enum: ['shared_drive', 'folder'] }).notNull(),
+    driveLocationId: text('drive_location_id').notNull(),
+    // Denormalized copy of `users.email` at insert time — the *same*
+    // reasoning, one layer earlier: `users`' own RLS (self-access, plus
+    // the two single-value lookup GUCs) has no policy that lets an
+    // admin's tenant-scoped connection see *another* user's row at all,
+    // so an admin's members-list read can never join out to `users` for
+    // a teacher's email either, not just `schools`. Copied once from the
+    // email the admin looked the teacher up by (`addTeacherToSchool`,
+    // `M3-015`), never re-read live.
+    email: text('email').notNull(),
+    driveAccessGranted: boolean('drive_access_granted').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Admin manages every member of schools *they* admin — the first
+    // subquery-based policy in this file (every earlier policy compares a
+    // column directly to a session GUC); Postgres evaluates this subquery
+    // under the same `app_user` role's own RLS, so it composes rather than
+    // needing a bypass. `schools` is already defined above, so a typed
+    // column ref is safe here (no temporal-dead-zone issue in this
+    // direction).
+    pgPolicy('school_members_admin_manages_own_school', {
+      for: 'all',
+      to: 'app_user',
+      using: sql`${table.schoolId} in (select ${schools.id} from ${schools} where ${schools.adminUserId} = nullif(current_setting('app.current_user_id', true), '')::uuid)`,
+    }),
+    // A teacher sees and can update only their *own* membership row (e.g.
+    // flipping `driveAccessGranted`) — never insert/delete it themselves;
+    // with no teacher policy covering those two actions, RLS's default-deny
+    // blocks them, leaving add/remove exclusively to the admin policy above.
+    pgPolicy('school_members_self_select', {
+      for: 'select',
+      to: 'app_user',
+      using: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    }),
+    pgPolicy('school_members_self_update', {
+      for: 'update',
+      to: 'app_user',
+      using: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+      withCheck: sql`${table.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
     }),
   ],
 ).enableRLS();
