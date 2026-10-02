@@ -84,7 +84,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('account routes: GET /accoun
         cookies: { sharlo_session: app.signCookie(session.token) },
       });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ authMode: 'google' });
+      expect(response.json()).toEqual({ authMode: 'google', email: user.email });
     } finally {
       await app.close();
       await cleanupUser(user.id);
@@ -102,7 +102,7 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('account routes: GET /accoun
         cookies: { sharlo_session: app.signCookie(session.token) },
       });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ authMode: 'local_only' });
+      expect(response.json()).toEqual({ authMode: 'local_only', email: user.email });
     } finally {
       await app.close();
       await cleanupUser(user.id);

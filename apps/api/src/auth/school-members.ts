@@ -175,3 +175,34 @@ export async function confirmDriveAccessGranted(db: Db, userId: string): Promise
       .where(eq(schoolMembers.userId, userId)),
   );
 }
+
+export type RemoveTeacherResult = { outcome: 'removed' } | { outcome: 'member_not_found' };
+
+/**
+ * `M3-018`/`FR-SCHOOL-05` — removes a teacher's membership row. This is
+ * deliberately *only* the database-record half of removal: the caller
+ * (the admin's own browser, not this backend — `ADR-0004`) is responsible
+ * for the Drive-side cleanup (best-effort ownership transfer on the
+ * folder path, then revoking the Drive permission) *before* calling
+ * this, since once the row is gone there's no further membership data
+ * here to drive that cleanup from. `school_members_admin_manages_own_school`'s
+ * `for: 'all'` scoping already covers DELETE the same way it covers every
+ * other command on this table, so a `memberId` under a school this admin
+ * doesn't own deletes zero rows rather than erroring — `.returning()`
+ * (not a driver-specific row-count field) is what tells the two cases
+ * apart, the same portable-across-drivers approach `addTeacherToSchool`'s
+ * own `.returning()` calls already use.
+ */
+export async function removeTeacherFromSchool(
+  db: Db,
+  adminUserId: string,
+  memberId: string,
+): Promise<RemoveTeacherResult> {
+  const deleted = await withTenantContext(db, adminUserId, (tx) =>
+    tx
+      .delete(schoolMembers)
+      .where(eq(schoolMembers.id, memberId))
+      .returning({ id: schoolMembers.id }),
+  );
+  return deleted.length > 0 ? { outcome: 'removed' } : { outcome: 'member_not_found' };
+}

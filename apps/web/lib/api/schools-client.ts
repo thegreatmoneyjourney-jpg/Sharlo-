@@ -120,6 +120,31 @@ export async function submitAddTeacher(
   throw new Error(`Failed to add teacher (HTTP ${response.status})`);
 }
 
+/**
+ * `M3-018`/`FR-SCHOOL-05` — only the database-record half of removal; the
+ * caller must already have run the Drive-side cleanup (best-effort
+ * ownership transfer + permission revocation) before calling this, same
+ * division of labor `addTeacherToSchool`'s own Drive-share-after-DB-add
+ * ordering established the other way around. `204` is the only success
+ * status; `404` means the memberId didn't exist (including "existed, but
+ * under a school this admin doesn't own" — RLS, not a distinguishable
+ * outcome from the caller's side, same as every other admin-scoped route).
+ */
+export async function submitRemoveTeacher(schoolId: string, memberId: string): Promise<boolean> {
+  const response = await fetch(`${API_BASE_URL}/schools/${schoolId}/members/${memberId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { [CSRF_HEADER_NAME]: readCsrfCookie() },
+  });
+  if (response.status === 204) {
+    return true;
+  }
+  if (response.status === 404) {
+    return false;
+  }
+  throw new Error(`Failed to remove teacher (HTTP ${response.status})`);
+}
+
 export interface MyMembership {
   id: string;
   schoolId: string;

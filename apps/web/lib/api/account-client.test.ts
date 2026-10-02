@@ -9,13 +9,13 @@ describe('account-client', () => {
   it('fetchAccountInfo sends credentials and returns the parsed body', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ authMode: 'local_only' }),
+      json: async () => ({ authMode: 'local_only', email: 'teacher@example.com' }),
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await fetchAccountInfo();
 
-    expect(result).toEqual({ authMode: 'local_only' });
+    expect(result).toEqual({ authMode: 'local_only', email: 'teacher@example.com' });
     const [, options] = fetchMock.mock.calls[0];
     expect(options.credentials).toBe('include');
   });

@@ -345,4 +345,126 @@ describe.skipIf(!DATABASE_URL || !APP_DATABASE_URL)('school member routes', () =
       await cleanupUser(teacher.id);
     }
   });
+
+  /**
+   * `M3-018`/`FR-SCHOOL-05` — `DELETE /schools/:id/members/:memberId`.
+   * This route is only ever the DB-record half of removal (the admin's
+   * browser is expected to already have run the Drive-side cleanup
+   * first) — these tests cover the route/RLS contract, not the Drive
+   * orchestration, which `school-members-panel.test.tsx` covers.
+   */
+  it('rejects DELETE with no session', async () => {
+    const app = await buildTestApp();
+    try {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/schools/${randomUUID()}/members/${randomUUID()}`,
+      });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('removes a member and they no longer appear in the member list', async () => {
+    const app = await buildTestApp();
+    const admin = await createGoogleUser();
+    const teacher = await createGoogleUser();
+    try {
+      const adminSession = await createSession(appDb, admin.id);
+      const schoolId = await createSchoolFor(app, adminSession);
+
+      const addResponse = await app.inject({
+        method: 'POST',
+        url: `/schools/${schoolId}/members`,
+        cookies: { sharlo_session: app.signCookie(adminSession.token) },
+        headers: { 'x-csrf-token': adminSession.csrfToken },
+        payload: { email: teacher.email },
+      });
+      const memberId = addResponse.json().id as string;
+
+      const deleteResponse = await app.inject({
+        method: 'DELETE',
+        url: `/schools/${schoolId}/members/${memberId}`,
+        cookies: { sharlo_session: app.signCookie(adminSession.token) },
+        headers: { 'x-csrf-token': adminSession.csrfToken },
+      });
+      expect(deleteResponse.statusCode).toBe(204);
+
+      const listResponse = await app.inject({
+        method: 'GET',
+        url: `/schools/${schoolId}/members`,
+        cookies: { sharlo_session: app.signCookie(adminSession.token) },
+      });
+      expect(listResponse.json().members).toEqual([]);
+    } finally {
+      await app.close();
+      await cleanupUser(admin.id);
+      await cleanupUser(teacher.id);
+    }
+  });
+
+  it('returns 404 member_not_found for an unknown memberId', async () => {
+    const app = await buildTestApp();
+    const admin = await createGoogleUser();
+    try {
+      const session = await createSession(appDb, admin.id);
+      const schoolId = await createSchoolFor(app, session);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/schools/${schoolId}/members/${randomUUID()}`,
+        cookies: { sharlo_session: app.signCookie(session.token) },
+        headers: { 'x-csrf-token': session.csrfToken },
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: 'member_not_found' });
+    } finally {
+      await app.close();
+      await cleanupUser(admin.id);
+    }
+  });
+
+  it('returns 404 for a member belonging to a school the caller does not admin (RLS, not a schoolId check)', async () => {
+    const app = await buildTestApp();
+    const adminA = await createGoogleUser();
+    const adminB = await createGoogleUser();
+    const teacher = await createGoogleUser();
+    try {
+      const sessionA = await createSession(appDb, adminA.id);
+      const sessionB = await createSession(appDb, adminB.id);
+      const schoolAId = await createSchoolFor(app, sessionA);
+
+      const addResponse = await app.inject({
+        method: 'POST',
+        url: `/schools/${schoolAId}/members`,
+        cookies: { sharlo_session: app.signCookie(sessionA.token) },
+        headers: { 'x-csrf-token': sessionA.csrfToken },
+        payload: { email: teacher.email },
+      });
+      const memberId = addResponse.json().id as string;
+
+      const deleteResponse = await app.inject({
+        method: 'DELETE',
+        url: `/schools/${schoolAId}/members/${memberId}`,
+        cookies: { sharlo_session: app.signCookie(sessionB.token) },
+        headers: { 'x-csrf-token': sessionB.csrfToken },
+      });
+      expect(deleteResponse.statusCode).toBe(404);
+      expect(deleteResponse.json()).toEqual({ error: 'member_not_found' });
+
+      // Still there — adminB's attempt was really a no-op, not a leak.
+      const listResponse = await app.inject({
+        method: 'GET',
+        url: `/schools/${schoolAId}/members`,
+        cookies: { sharlo_session: app.signCookie(sessionA.token) },
+      });
+      expect(listResponse.json().members).toHaveLength(1);
+    } finally {
+      await app.close();
+      await cleanupUser(adminA.id);
+      await cleanupUser(adminB.id);
+      await cleanupUser(teacher.id);
+    }
+  });
 });

@@ -9,6 +9,7 @@ import {
   confirmDriveAccessGranted,
   getMembershipForUser,
   listMembersForSchool,
+  removeTeacherFromSchool,
 } from '../auth/school-members.js';
 
 type Db = PostgresJsDatabase<typeof schema>;
@@ -36,6 +37,7 @@ const addMemberBodySchema = z.object({
 });
 
 const schoolIdParamsSchema = z.object({ id: z.string().uuid() });
+const schoolMemberParamsSchema = z.object({ id: z.string().uuid(), memberId: z.string().uuid() });
 
 export interface SchoolRoutesOptions {
   db: Db;
@@ -109,6 +111,30 @@ export async function schoolRoutes(app: FastifyInstance, opts: SchoolRoutesOptio
 
     const members = await listMembersForSchool(db, session.userId, params.data.id);
     return reply.code(200).send({ members });
+  });
+
+  // `M3-018`/`FR-SCHOOL-05` — only the database half of removal; the
+  // admin's own browser must already have run the Drive-side cleanup
+  // (best-effort ownership transfer + permission revocation,
+  // `ADR-0010`'s "Teacher removal" section) before calling this, same
+  // "backend never touches Drive" division of labor as every other
+  // School-plan route (`ADR-0004`).
+  app.delete('/schools/:id/members/:memberId', async (req, reply) => {
+    const session = await requireSession(req, reply, db);
+    if (!session) return;
+
+    const params = schoolMemberParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: 'invalid_params' });
+    }
+
+    const result = await removeTeacherFromSchool(db, session.userId, params.data.memberId);
+    switch (result.outcome) {
+      case 'removed':
+        return reply.code(204).send();
+      case 'member_not_found':
+        return reply.code(404).send({ error: 'member_not_found' });
+    }
   });
 
   // `M3-015`/`FR-SCHOOL-02` — the teacher-facing half: a teacher checks

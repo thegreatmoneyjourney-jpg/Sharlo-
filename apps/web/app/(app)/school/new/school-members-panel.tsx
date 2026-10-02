@@ -8,6 +8,7 @@ import {
   type SchoolSummary,
 } from '@/lib/api/schools-client';
 import { shareSchoolContainer } from '@/lib/drive/share-school-container';
+import { removeTeacherFromSchool } from '@/lib/drive/remove-teacher-from-school';
 
 const SECONDARY_BUTTON_CLASSES =
   'rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900';
@@ -36,6 +37,9 @@ export function SchoolMembersPanel({ school }: { school: SchoolSummary }) {
   const [email, setEmail] = useState('');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [confirmingRemoveId, setConfirmingRemoveId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removalNotice, setRemovalNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,11 +104,47 @@ export function SchoolMembersPanel({ school }: { school: SchoolSummary }) {
     }
   }
 
+  /**
+   * `M3-018`/`FR-SCHOOL-05` — runs the full remove sequence
+   * (`lib/drive/remove-teacher-from-school.ts`: best-effort ownership
+   * transfer on the folder path, then revoke, then delete the
+   * membership row) and surfaces every outcome, including the
+   * documented best-effort-transfer limitation, rather than reporting a
+   * flat "removed" regardless of what actually happened.
+   */
+  async function handleRemoveTeacher(member: SchoolMemberSummary) {
+    setRemovingId(member.id);
+    setRemovalNotice(null);
+    try {
+      const outcome = await removeTeacherFromSchool(school, member);
+      if (outcome.removed) {
+        setMembers((prev) => (prev ? prev.filter((m) => m.id !== member.id) : prev));
+      }
+      const failedTransfers =
+        outcome.transferResults?.filter((r) => r.outcome === 'transfer_failed') ?? [];
+      if (failedTransfers.length > 0) {
+        setRemovalNotice(
+          `${member.email} was removed, but ownership of ${failedTransfers.length} file${failedTransfers.length === 1 ? '' : 's'} they still owned (e.g. "${failedTransfers[0]!.fileName}") couldn't be transferred automatically. This school stores data in a personal Drive folder, which only gives a best-effort continuity guarantee — see your school settings for details.`,
+        );
+      } else if (!outcome.removed) {
+        setRemovalNotice(`${member.email} was already removed.`);
+      }
+    } catch {
+      setRemovalNotice(`Couldn't remove ${member.email}. Please try again.`);
+    } finally {
+      setRemovingId(null);
+      setConfirmingRemoveId(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Teachers</h2>
 
       {loadError && <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>}
+      {removalNotice && (
+        <p className="text-sm text-amber-700 dark:text-amber-400">{removalNotice}</p>
+      )}
       {members && members.length === 0 && (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">No teachers added yet.</p>
       )}
@@ -113,16 +153,46 @@ export function SchoolMembersPanel({ school }: { school: SchoolSummary }) {
           {members.map((member) => (
             <li
               key={member.id}
-              className="flex items-center justify-between text-sm text-zinc-700 dark:text-zinc-300"
+              className="flex items-center justify-between gap-2 text-sm text-zinc-700 dark:text-zinc-300"
             >
               <span>{member.email}</span>
-              {member.driveAccessGranted ? (
-                <span className="text-xs text-emerald-600 dark:text-emerald-400">connected</span>
-              ) : (
-                <span className="text-xs text-amber-600 dark:text-amber-400">
-                  pending Drive access
-                </span>
-              )}
+              <span className="flex items-center gap-2">
+                {member.driveAccessGranted ? (
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400">connected</span>
+                ) : (
+                  <span className="text-xs text-amber-600 dark:text-amber-400">
+                    pending Drive access
+                  </span>
+                )}
+                {confirmingRemoveId === member.id ? (
+                  <span className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveTeacher(member)}
+                      disabled={removingId === member.id}
+                      className="text-xs font-medium text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400"
+                    >
+                      {removingId === member.id ? 'Removing…' : 'Confirm remove'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingRemoveId(null)}
+                      disabled={removingId === member.id}
+                      className="text-xs text-zinc-500 hover:underline dark:text-zinc-400"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingRemoveId(member.id)}
+                    className="text-xs text-zinc-500 hover:underline dark:text-zinc-400"
+                  >
+                    Remove
+                  </button>
+                )}
+              </span>
             </li>
           ))}
         </ul>
