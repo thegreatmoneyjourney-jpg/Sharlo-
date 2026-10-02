@@ -12,6 +12,7 @@ import {
   type SchoolSummary,
 } from '@/lib/api/schools-client';
 import { RequireMasterKey } from '../../require-master-key';
+import { SchoolMembersPanel } from './school-members-panel';
 
 const PRIMARY_BUTTON_CLASSES =
   'rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40';
@@ -146,21 +147,25 @@ function NewSchoolForm({ masterKey }: { masterKey: Bytes }) {
   }
   if (loadState.status === 'has-school') {
     return (
-      <div className="flex flex-col gap-2">
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
-          You already manage a school
-        </h1>
-        <p className="text-sm text-zinc-700 dark:text-zinc-300">{loadState.school.name}</p>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+            You already manage a school
+          </h1>
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">{loadState.school.name}</p>
+        </div>
+        <SchoolMembersPanel school={loadState.school} />
       </div>
     );
   }
   if (created) {
     return (
-      <div className="flex flex-col gap-2">
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">School created</h1>
-        <p className="text-sm text-zinc-700 dark:text-zinc-300">
-          {created.name} is ready. Inviting teachers isn&rsquo;t built yet — coming soon.
-        </p>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">School created</h1>
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">{created.name} is ready.</p>
+        </div>
+        <SchoolMembersPanel school={created} />
       </div>
     );
   }

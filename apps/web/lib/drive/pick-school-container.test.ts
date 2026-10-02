@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PickerResponse } from './google-picker-loader';
-import { pickSharedDrive } from './shared-drive-picker';
+import { pickSchoolContainer } from './pick-school-container';
 
 vi.mock('./google-picker-loader', () => ({ loadGooglePicker: vi.fn(async () => undefined) }));
 vi.mock('../api/drive-token-client', () => ({
@@ -9,6 +9,10 @@ vi.mock('../api/drive-token-client', () => ({
 
 const ORIGINAL_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY;
 
+// Same fixture shape as `shared-drive-picker.test.ts` — see that file's own
+// comments for why these are plain `function` constructors (not
+// `vi.fn(() => ...)`, which can't back a `new` call) and why firing the
+// captured callback needs a `flushMicrotasks()` delay first.
 function installFakeGooglePicker() {
   let capturedCallback: ((data: PickerResponse) => void) | undefined;
   const view = {
@@ -27,12 +31,6 @@ function installFakeGooglePicker() {
     }),
     build: vi.fn(() => ({ setVisible: vi.fn() })),
   };
-  // Plain `function` constructors, not `vi.fn(() => ...)` — an arrow
-  // function can't back a `new` call (arrows are never constructible,
-  // the exact `"... is not a constructor"` TypeError this fixture hit
-  // before this fix), so these are real constructor functions that
-  // happen to override their return value, a valid JS pattern `new`
-  // respects for object (non-primitive) returns.
   function DocsView(this: unknown) {
     return view;
   }
@@ -54,11 +52,6 @@ function installFakeGooglePicker() {
   };
 }
 
-// `pickSharedDrive` awaits `loadGooglePicker()` then `getDriveAccessToken()`
-// before it ever calls `setCallback` — firing the fake callback right after
-// calling `pickSharedDrive()` would race ahead of those microtasks. A few
-// `Promise.resolve()` ticks reliably drains them (both mocks resolve in a
-// single microtask each) without hardcoding an exact hop count.
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 5; i++) {
     await Promise.resolve();
@@ -75,33 +68,53 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('pickSharedDrive', () => {
+describe('pickSchoolContainer', () => {
   it('throws if NEXT_PUBLIC_GOOGLE_PICKER_API_KEY is not configured', async () => {
     delete process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY;
 
-    await expect(pickSharedDrive()).rejects.toThrow(/NEXT_PUBLIC_GOOGLE_PICKER_API_KEY/);
+    await expect(pickSchoolContainer('drive-1')).rejects.toThrow(
+      /NEXT_PUBLIC_GOOGLE_PICKER_API_KEY/,
+    );
   });
 
-  it('resolves with the picked Shared Drive when the user selects one', async () => {
+  it('scopes the view to items not owned by the viewer', async () => {
     const fake = installFakeGooglePicker();
 
-    const resultPromise = pickSharedDrive();
+    const resultPromise = pickSchoolContainer('drive-1');
     await flushMicrotasks();
-    fake.fireCallback({ action: 'picked', docs: [{ id: 'drive-1', name: 'My School Drive' }] });
+    fake.fireCallback({ action: 'picked', docs: [{ id: 'drive-1', name: 'Shared Folder' }] });
+    await resultPromise;
 
-    expect(await resultPromise).toEqual({ id: 'drive-1', name: 'My School Drive' });
-    expect(fake.builder.setOAuthToken).toHaveBeenCalledWith('test-access-token');
-    expect(fake.builder.setDeveloperKey).toHaveBeenCalledWith('test-picker-api-key');
-    expect(fake.view.setEnableDrives).toHaveBeenCalledWith(true);
+    expect(fake.view.setOwnedByMe).toHaveBeenCalledWith(false);
   });
 
-  it('resolves with null when the user cancels', async () => {
+  it('resolves "confirmed" when the picked item matches the expected id', async () => {
     const fake = installFakeGooglePicker();
 
-    const resultPromise = pickSharedDrive();
+    const resultPromise = pickSchoolContainer('drive-1');
+    await flushMicrotasks();
+    fake.fireCallback({ action: 'picked', docs: [{ id: 'drive-1', name: 'Shared Folder' }] });
+
+    expect(await resultPromise).toEqual({ outcome: 'confirmed' });
+  });
+
+  it('resolves "wrong_item" when the picked item does not match the expected id', async () => {
+    const fake = installFakeGooglePicker();
+
+    const resultPromise = pickSchoolContainer('drive-1');
+    await flushMicrotasks();
+    fake.fireCallback({ action: 'picked', docs: [{ id: 'some-other-drive', name: 'My Stuff' }] });
+
+    expect(await resultPromise).toEqual({ outcome: 'wrong_item', pickedName: 'My Stuff' });
+  });
+
+  it('resolves "cancelled" when the user cancels without picking anything', async () => {
+    const fake = installFakeGooglePicker();
+
+    const resultPromise = pickSchoolContainer('drive-1');
     await flushMicrotasks();
     fake.fireCallback({ action: 'cancel' });
 
-    expect(await resultPromise).toBeNull();
+    expect(await resultPromise).toEqual({ outcome: 'cancelled' });
   });
 });
