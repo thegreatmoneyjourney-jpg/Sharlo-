@@ -4,20 +4,21 @@ Grade multiple-choice bubble sheets by camera — no scanner, no per-scan cost, 
 
 A teacher shows a bubble sheet to their phone or laptop camera; within ~2 seconds it's detected and scored, and the app is ready for the next sheet. Anything the engine can't confidently read is flagged for a quick manual review instead of being auto-guessed. Results land in an editable table with per-class analytics, export, and printable result cards.
 
-> **Project status:** planning phase. The docs below define the full v1 scope and are awaiting founder review before feature code is written. See `docs/TASKS.md` M0 for the repo-scaffolding work that comes next.
+> **Project status (updated 2026-10-03):** M0 (repo/planning foundation), M1 (scanning engine core), M2 (templates & review queue), and M3 (accounts, auth & Drive sync) are done and founder-confirmed — sign-in, client-side encryption, camera/batch scanning, the Review Queue, rostering, results/analytics/export, and the School plan's multi-tenant dual-encryption all work end to end today. Active development has just handed off from Claude Code to Cline for M4 (Billing) onward — **see `HANDOFF.md` for the full picture before anything else.**
 
 ## Documentation
 
-Start here, in this order:
+**If you're picking up development on this repo, read [`HANDOFF.md`](HANDOFF.md) first, then [`.clinerules`](.clinerules) — in that order, before anything below.** They have the current project state, what's built, what's blocked, and the exact rules to follow on every task.
+
+Everything else, in the order `HANDOFF.md` itself points to next:
 
 1. [`docs/SRS.md`](docs/SRS.md) — what the product must do (functional + non-functional requirements, acceptance criteria).
 2. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how it's built (system design, data model, encryption design, threat model).
 3. [`docs/ADR/`](docs/ADR) — why specific technical decisions were made, one file per decision.
-4. [`docs/TASKS.md`](docs/TASKS.md) — the work, broken into milestones and tracked tasks.
-5. [`docs/reports/`](docs/reports) — one report per completed task, written as work lands.
-6. [`CLAUDE.md`](CLAUDE.md) — persistent working instructions for AI-assisted development on this repo.
-
-If you only read one thing before the SRS/ARCHITECTURE docs, read `docs/reports/SHARLO-M0-001.md` — it's short and flags the handful of real decisions this plan needs from the founder before certain milestones can proceed.
+4. [`docs/TASKS.md`](docs/TASKS.md) — the work, broken into milestones and tracked tasks, with a full deep spec for every not-yet-started task.
+5. [`docs/TASK-WORKFLOW.md`](docs/TASK-WORKFLOW.md) — the literal, step-by-step sequence to follow for every task.
+6. [`docs/reports/`](docs/reports) — one report per completed task, written as work lands.
+7. [`CLAUDE.md`](CLAUDE.md) — the persistent decisions log for AI-assisted development on this repo (history of what was decided and why, kept current).
 
 ## Tech stack
 
@@ -46,7 +47,7 @@ npm run dev:web       # http://localhost:3000
 npm run dev:api        # http://localhost:4000/health
 ```
 
-Postgres/Drizzle, Docker Compose, and env var wiring land in `docs/TASKS.md` tasks `M0-004`–`M0-006` — until then there's nothing to configure beyond the two dev servers above.
+Postgres/Drizzle and Docker Compose are fully wired up (see `apps/api/.env.example` and the root `.env.example` for the env vars each needs) — the two dev servers above are enough for frontend-only work, but most backend routes need a real local Postgres running; see `infra/README.md` for the Docker Compose path.
 
 ## Running CI checks locally
 
