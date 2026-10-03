@@ -932,13 +932,59 @@ Depends on M3 (exam results must exist to publish) and M4 (billing/entitlement �
 
 ---
 
-## M13 — Fee Tracker ⚠️ SPEC NOT WRITTEN — DO NOT START
+## M13 — Fee Tracker (Pro/School)
 
-**This milestone has exactly zero tasks, on purpose.** "Fee Tracker (teacher tuition tier + principal/school rollup)" is one of exactly four pillars the founder has named as locked v1 scope — but, found during this handoff's reconciliation audit, it has never been given functional requirements, a data model, or a task breakdown anywhere in this project's history. See `docs/SRS.md` §5.17a for the full account of how this was found and confirmed, and `HANDOFF.md` §3.1 item 1.
+**Spec resolved 2026-10-03 — see `docs/SRS.md` §5.17a (`FR-FEE-01`–`07`) for the full requirements.** This milestone previously had zero tasks on purpose, because "Fee Tracker" — one of the four locked-scope pillars — had never been given functional requirements anywhere in this project's history (found during the 2026-10-02/03 handoff's reconciliation audit). The founder has since provided full requirements as a same-day follow-up, and the task breakdown below is built from them.
 
-**Do not write a task breakdown for this milestone yourself.** Doing so would mean inventing requirements the founder never actually specified — this is explicitly a stop-and-ask situation (`.clinerules` §6, item 5: "any point where a task seems to require a feature or scope not covered by the locked four-pillar scope" — the inverse problem applies equally here: a pillar that _is_ in scope but has no actual spec is just as much a stop-and-ask as scope that isn't in scope at all).
+**Writing this spec is not authorization to start it.** `M13` is a not-yet-started milestone exactly like `M4`–`M12` — the standing milestone-gating rule applies without exception: **do not start `M13-001` or any task below without the founder's explicit "go" on `M13` specifically**, even though its spec now exists in full. Depends on `M3` (Drive/encryption, done) and `M8` (Class Management — Fee Tracker needs the same persistent per-class concept `M8-001` builds, not the ad-hoc per-exam roster; billing periods are a recurring, non-exam-tied concept, the same shape `FR-ATTEND-*` already established for attendance). `M13-004`/`M13-005` (the School-rollup half) additionally depend on `M3-014`–`017`'s already-built, already-shipped school dual-encryption/rollup mechanism — no new crypto primitive is needed anywhere in this milestone. One open, non-blocking design question is flagged at `docs/SRS.md` §8 item 9 (whether fee amounts/currency should be tracked at all, beyond status) — worth a founder confirmation before or during `M13-002`, not before `M13` can start. Not atomized further beyond the six tasks below. Deep-spec format applied.
 
-When the founder provides real requirements (what a fee record contains, how a payment is recorded, what "principal/school rollup" means concretely, whether this is student-PII-adjacent data needing client-side encryption like attendance, or something else entirely): write them up in `docs/SRS.md` as `FR-FEE-01` onward first, in that same ID/acceptance-criteria format every other FR section already uses, get that reviewed, and only then come back here and write this milestone's task breakdown at the same depth as every other milestone above.
+#### M13-001: Fee-period data model + per-class cadence setting
+
+- **Goal:** New encrypted envelope type `feePeriod` (one per class per billing period) plus a cadence-label setting on the class entity — `FR-FEE-01`/`04`.
+- **Done-when:** A billing period created for a class is independently stored, versioned (`CURRENT_FEE_PERIOD_SCHEMA_VERSION`/`FEE_PERIOD_MIGRATIONS`, matching `exam-results.ts`'s/`roster-store.ts`'s existing per-type pattern), and round-trips through encrypt→store→decrypt unchanged; changing a class's cadence label never creates, alters, or deletes any existing period record — verified by a test.
+- **Must reuse / must not duplicate:** `envelope-crypto.ts`/`envelope-migration.ts` directly, the exact per-type schema-versioning pattern `M3-013` established — do not invent a new envelope-encryption scheme. The class/roster entity `M8-001` builds, not a new, parallel "class" concept.
+- **Test requirements:** The round-trip test and the cadence-label-independence test described above.
+- **Stop-and-ask if:** You find yourself wanting to add an amount/currency field "while you're in here" — don't; `FR-FEE-02`'s status-only scope is deliberate and separately flagged (`docs/SRS.md` §8 item 9), not yours to expand unilaterally.
+
+#### M13-002: Teacher fee-status marking UI
+
+- **Goal:** Per-class, per-period view where the teacher sets each student's status (paid / unpaid / partially paid) — `FR-FEE-02`.
+- **Done-when:** A newly created period shows every roster student defaulted to "unpaid"; changing one student's status is a single, immediate action, not a batch save (`FR-FEE-02`'s literal acceptance criterion).
+- **Must reuse / must not duplicate:** The roster list `M8-001` builds to populate students — never a second, parallel per-period student list.
+- **Test requirements:** The default-unpaid-on-creation test and the single-action-status-change test.
+- **Stop-and-ask if:** The amount/currency question (`docs/SRS.md` §8 item 9) hasn't been confirmed by the founder before you start this task, and you find the status-only UI genuinely awkward without an amount field — surface that discomfort to the founder before proceeding, don't add the field yourself to resolve it.
+
+#### M13-003: Outstanding-fees list/filter view
+
+- **Goal:** Sortable/filterable-by-status list for a class's billing period — `FR-FEE-03`.
+- **Done-when:** Filtering to "unpaid" or "partially paid" on a class with mixed statuses shows exactly, and only, the matching students (`FR-FEE-03`'s literal acceptance criterion).
+- **Must reuse / must not duplicate:** N/A — new, self-contained view over `M13-001`'s data.
+- **Test requirements:** The filter-shows-exactly-matching-students test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M13-004: School dual-encryption on fee-period save
+
+- **Goal:** A teacher-under-school's client additionally seals each saved billing period to the school admin's key, written into the school's shared Drive container — `FR-FEE-05`.
+- **Done-when:** A teacher-under-school's own fee-tracking view is byte-for-byte unaffected (identical to a non-school teacher's); the sealed copy independently decrypts in a separate admin test session — the exact same two-part proof `M3-016` already established for exam results.
+- **Must reuse / must not duplicate:** **Must reuse `sealToPublicKey`/`openSealedBox` (`apps/web/lib/crypto/x25519.ts`) and `school-container-store.ts` directly** — this is explicitly the second call site those primitives were built generically for (`ADR-0010`'s addendum). Do not write a second sealing mechanism. New Drive file type `schoolFeePeriod` (distinct from `schoolExamResults`), same `'<containerId>' in parents` scoping `school-container-store.ts` already uses.
+- **Test requirements:** The two-separate-sessions end-to-end test (seal from a simulated "teacher session" holding only the admin's public key; open from a separate "admin session" holding the full keypair), following `school-result-dual-encryption.e2e.test.ts`'s exact pattern.
+- **Stop-and-ask if:** You're not confident about exactly what identifying information is safe to add to the sealed content for `M13-005`'s drill-down need (see that task's own note and `docs/ARCHITECTURE.md` §7) — ask rather than guess at the content shape.
+
+#### M13-005: Principal/School fee rollup dashboard
+
+- **Goal:** Read-only rollup across every teacher/class in the school — outstanding-student count per class, a school-wide total, and the ability to see which specific teacher/class has the most outstanding — `FR-FEE-06`.
+- **Done-when:** Decrypted entirely client-side in the admin's own browser from the sealed `schoolFeePeriod` copies; no mutating API or UI path exists anywhere for the principal role on this data (a structural check, not just "the edit button is hidden") — the same backend-never-in-the-decrypt-path guarantee verified the same way `M3-017`'s own check already is.
+- **Must reuse / must not duplicate:** `loadSchoolWideExamResults`'s pattern (`lib/exams/school-wide-results.ts`, `M3-017`) as the template — list every sealed record of the new type in the one shared container, no per-teacher iteration needed, the same reason that function needs none. **Deliberate content-shape deviation — flag it visibly in code comments where you make it:** unlike `schoolExamResults`, the sealed `schoolFeePeriod` content must carry a class label and a teacher-identifying field (e.g. the teacher's email, already available via `GET /account/me`) — this task's own drill-down requirement needs it, where the exam dashboard never did. This is a narrow, justified addition, not a precedent for adding teacher identity to any other sealed type without the same explicit reasoning.
+- **Test requirements:** The structural no-mutating-path check, and a multi-teacher/multi-class rollup test confirming the school-wide total and the per-class/per-teacher breakdown are both arithmetically correct against a synthetic multi-teacher fixture.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M13-006: Free-tier gating for Fee Tracker
+
+- **Goal:** Wire `M4-008`'s entitlement check into every Fee Tracker entry point, both the teacher view and the principal rollup — `FR-FEE-07`.
+- **Done-when:** A Free-plan test account sees Fee Tracker as locked/upsell, never silently broken or half-working — the exact same done-when `M8-005` already established for Class Management.
+- **Must reuse / must not duplicate:** `M4-008`'s entitlement layer and `M4-009`'s caching layer directly — same gating pattern as `M8-005`/`M9`–`M11`, not a new check.
+- **Test requirements:** The Free-plan-account-sees-locked-state test.
+- **Stop-and-ask if:** None beyond the standing list.
 
 ---
 
@@ -953,10 +999,10 @@ M0 (foundation) ─┬─▶ M1 (scanning core) ─▶ M2 (templates/review) ─
                                                             ├──────────▶ M11 (import/grid) ────┤
                                                             └──────────▶ M12 (public results) ──┘
 
-M13 (Fee Tracker) — no dependency edges drawn; it has no tasks to depend on anything yet. Do not start.
+M3 (auth/Drive) ──▶ M8 (attendance) ──▶ M13 (fee tracker) — depends on M8's persistent class concept; M13-004/005 (school rollup half) also depend on M3-014–017's already-shipped school dual-encryption mechanism.
 ```
 
-M0 through M3 are done (except the founder-blocked items in each — see `HANDOFF.md` §1). **Starting M4 requires the founder's explicit "go" on M4**, the same standing rule that governed every milestone before it — this handoff authorizes nothing on its own. `M7-008`/`M7-009` (load/fuzz testing) and `M7-018`–`M7-023` (the security/QA sweep) don't need to wait for the rest of M7 to be underway — see each task's own note above — but all of M7 must be fully complete before public launch regardless of when individual tasks ran.
+M0 through M3 are done (except the founder-blocked items in each — see `HANDOFF.md` §1). **Starting M4 requires the founder's explicit "go" on M4**, the same standing rule that governed every milestone before it — this handoff authorizes nothing on its own. `M13`'s spec is now fully written (`docs/SRS.md` §5.17a, resolved 2026-10-03) but it is **not** authorized — same rule, no exception for a recently-completed spec. `M7-008`/`M7-009` (load/fuzz testing) and `M7-018`–`M7-023` (the security/QA sweep) don't need to wait for the rest of M7 to be underway — see each task's own note above — but all of M7 must be fully complete before public launch regardless of when individual tasks ran.
 
 ---
 
