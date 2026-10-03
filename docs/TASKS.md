@@ -91,141 +91,854 @@ ADR-0005 and ADR-0010 are both **Accepted** (confirmed by the founder — see `d
 
 ## M4 — Billing (Paddle, Bank Alfalah)
 
-| ID     | Title                                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Requirement(s)                                   | Done when                                                                                                                                                                                                                                                                                         |
-| ------ | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M4-001 | Pricing/tier data model              | `pricing_tiers`, `country_tier_map` tables, seeded with the confirmed values in `docs/SRS.md` §5.9a (Tier 1/2/3, Gulf, Pakistan — includes the Gulf tier added 2026-09-24).                                                                                                                                                                                                                                                                                                                                                                               | FR-BILLING-01, FR-BILLING-02, ARCHITECTURE.md §6 | Admin can change a price and see it reflected on the pricing page without a deploy.                                                                                                                                                                                                               |
-| M4-002 | `PaymentProviderAdapter` interface   | The shared interface both providers implement (`ARCHITECTURE.md` §10).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | ADR-0006                                         | Interface has a passing contract test both adapters must satisfy.                                                                                                                                                                                                                                 |
-| M4-003 | Paddle adapter                       | Checkout, webhook ingestion + signature verification, subscription lifecycle, country/currency from Paddle's reported billing country.                                                                                                                                                                                                                                                                                                                                                                                                                    | FR-BILLING-03, FR-BILLING-04, NFR-SEC-11         | A test purchase (Paddle sandbox) flows through to an `active` subscription and correct plan entitlement.                                                                                                                                                                                          |
-| M4-004 | Bank Alfalah adapter                 | PKR checkout/callback, signature/integrity verification, reconciliation into the same subscription shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                 | FR-BILLING-04, NFR-SEC-11                        | A test PKR purchase (sandbox/UAT if available) flows through to an `active` subscription.                                                                                                                                                                                                         |
-| M4-005 | Entitlement/plan-check layer         | Single provider-agnostic function the rest of the app calls to check plan/limits — also the server-sourced entitlement endpoint `NFR-SEC-12` relies on for Addendum 2's client-only gated features (M8–M11). Includes the client-side caching layer from the start (`ADR-0015`: IndexedDB cache + timestamp, `app_config.entitlement_cache_max_age_hours` freshness window, background revalidation when stale-but-online, offline tolerance, Free-tier-safe fallback when no cache has ever been populated) — not a billing-page helper bolted on later. | FR-BILLING-01, NFR-SEC-12, ADR-0015              | Plan-gated features (unlimited custom templates, etc.) work identically regardless of which provider the subscription is on. Test coverage includes all four `ADR-0015` cache scenarios (fresh / stale-online / stale-offline / never-populated), not just "the endpoint returns the right plan." |
-| M4-006 | Free-tier usage counters             | `usage_counters` table, client-side increment-on-finalize call, optimistic offline buffering + reconciliation. Weekly reset (Monday 00:00 UTC) — was monthly. **Founder-confirmed rule: never hard-block mid-scan or mid-session, even once the server-confirmed count exceeds the cap** — the limit warning surfaces only at next session start or on the dashboard.                                                                                                                                                                                     | FR-BILLING-06, NFR-SEC-07                        | A test session that crosses the 100-scan/week cap mid-session completes uninterrupted; the warning appears only on the next app open / dashboard visit, never as a mid-session block.                                                                                                             |
-| M4-007 | Plan upgrade/downgrade/cancel flows  | Teacher-facing plan management UI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | FR-BILLING-01                                    | Downgrade from Pro to Free correctly re-applies Free-tier limits going forward without touching historical data.                                                                                                                                                                                  |
-| M4-008 | School seat management               | Minimum 5 seats, add/remove seats, per-teacher/year billing, proration per provider's rules.                                                                                                                                                                                                                                                                                                                                                                                                                                                              | FR-BILLING-07                                    | Adding a 6th seat mid-cycle bills correctly per the provider's proration behavior.                                                                                                                                                                                                                |
-| M4-009 | Provider-adapter extensibility proof | A stub/mock third adapter (not Easypaisa/JazzCash for real, just a test double) proving the interface supports a new provider without touching existing code.                                                                                                                                                                                                                                                                                                                                                                                             | FR-BILLING-05                                    | Mock adapter passes the same contract test as M4-002 with zero changes to `PaymentProviderAdapter` or existing adapters.                                                                                                                                                                          |
+**Rewritten to a deeper specification 2026-10-03 as part of the Cline handoff** (`HANDOFF.md`) — atomized into smaller, single-outcome tasks (14, up from 9) per the handoff's explicit instruction that M4/M5/M7 need finer granularity for a less autonomous developer. No task here has been started. Every task below follows the same five-field format: **Goal**, **Done-when**, **Must reuse / must not duplicate**, **Test requirements**, **Stop-and-ask if**.
 
-## M5 — Admin Panel
+Read `docs/ADR/0006-paddle-and-bank-alfalah-dual-payment-providers.md` in full before starting any task in this milestone — it has the full reasoning for the two-provider split and the adapter-interface design every task here implements against.
 
-| ID     | Title                                                         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Requirement(s)                    | Done when                                                                                                                                                                                                                                                                     |
-| ------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M5-001 | Admin subdomain scaffold + 2FA/passkey login                  | Separate deploy target, `noindex`, server-side-enforced 2FA/passkey.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | FR-ADMIN-01                       | Login without completing 2FA fails closed; subdomain confirmed non-indexable.                                                                                                                                                                                                 |
-| M5-002 | Audit log infrastructure                                      | Append-only `admin_audit_log`, no `DELETE`/`UPDATE` grant to the app role.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | FR-ADMIN-02, NFR-SEC-09           | An attempt to delete/edit an audit row via the app's DB role fails at the permission level, tested directly.                                                                                                                                                                  |
-| M5-003 | User & subscription management                                | View/block (**time-limited, auto-expiring**, Addendum 3)/refund/change-plan, refund routed through the correct provider adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | FR-ADMIN-03                       | Refunding a Bank Alfalah subscriber calls the Bank Alfalah adapter, not Paddle, and vice versa. A suspension set with an expiry lifts itself automatically — verified by a test that sets a short expiry and confirms access returns without further admin action.            |
-| M5-004 | Pricing/country-tier editor                                   | Admin UI over M4-001's data model.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | FR-ADMIN-04, FR-BILLING-02        | —                                                                                                                                                                                                                                                                             |
-| M5-005 | Feature flags                                                 | Segmentable by user/plan/cohort.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | FR-ADMIN-05                       | A flag scoped to "Pro plan only" correctly shows/hides for a Free-plan test account.                                                                                                                                                                                          |
-| M5-006 | ~~Ads on/off toggle~~ — **CANCELLED 2026-09-24 (Addendum 2)** | Ads fully cancelled, not deferred (`FR-ADMIN-06`). Nothing to build. ID kept, not deleted, so `M5-007`–`010` don't shift.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | FR-ADMIN-06                       | N/A                                                                                                                                                                                                                                                                           |
-| M5-007 | Revenue analytics dashboard                                   | MRR, ARR, churn, Free→Pro conversion rate, revenue by country/tier; multi-currency normalization; gross vs. net-of-fees. ARR/conversion-rate added 2026-09-25 (Addendum 3); ledger/expense detail is the separate `M5-015`.                                                                                                                                                                                                                                                                                                                                                                                                 | FR-ADMIN-07                       | A PKR + a USD test transaction both roll up correctly into one normalized MRR figure.                                                                                                                                                                                         |
-| M5-008 | Error/crash log viewer + scrubbing layer                      | Allow-list-based log scrubbing (not block-list) so new endpoints are unlogged-by-default until reviewed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | FR-ADMIN-08, NFR-SEC-05           | A deliberately triggered error containing a fake "student name" field in the request body does not appear in the log viewer.                                                                                                                                                  |
-| M5-009 | Announcement/broadcast system                                 | Message all/segmented users.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | FR-ADMIN-09                       | —                                                                                                                                                                                                                                                                             |
-| M5-010 | Support inbox                                                 | Incoming ticket view: open/resolved status, per-ticket thread view. Expanded 2026-09-25 (Addendum 3) from "minimal internal queue" now that `M5-013` needs a real inbox to attach AI drafts to.                                                                                                                                                                                                                                                                                                                                                                                                                             | FR-ADMIN-10                       | A ticket's full thread (customer messages + admin replies) renders in order; status filter (open/resolved) works.                                                                                                                                                             |
-| M5-011 | Admin "cannot decrypt" structural verification                | A written, reviewable check (code-level, not just doc-level) confirming no admin code path receives key material or Drive content.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | FR-ADMIN-11, ARCHITECTURE.md §11  | A grep/lint-style check or documented manual audit trail exists and is repeatable for future admin features.                                                                                                                                                                  |
-| M5-012 | No-code Settings/Integrations panel (UI)                      | Polished admin UI over `M0-010`'s `integration_credentials` table: add/update/rotate any provider credential (Resend, Paddle, Bank Alfalah, `M5-013`'s AI provider), each change written to `admin_audit_log`. Never displays a previously-saved value in decrypted form, only lets an admin overwrite it.                                                                                                                                                                                                                                                                                                                  | FR-ADMIN-15, ADR-0017             | Saving a new Resend key here is immediately usable server-side with zero redeploy; the panel never echoes a stored value back in plaintext.                                                                                                                                   |
-| M5-013 | AI-drafted support reply generation                           | Depends on `M5-010` (inbox to attach drafts to) and `M5-012` (AI provider key). Reads a ticket + `support_kb_articles`, generates a draft attached to the ticket (`sender_type = 'ai_draft'`, `sent_at` null) — never sent without an explicit founder send action. Mandatory PII-sanitization pass on outbound ticket content before it reaches the AI provider.                                                                                                                                                                                                                                                           | FR-ADMIN-12, NFR-SEC-15, ADR-0016 | A fixture ticket containing a roll-number-shaped string is masked in the actual outbound request payload, verified by inspecting what's sent, not just the function's return value; a test confirms no code path sets `sent_at` without an explicit send call.                |
-| M5-014 | Per-user scan-quota override                                  | Admin grants a specific user extra scans for the current (or a chosen) period beyond `FR-BILLING-06`'s weekly cap, read alongside `usage_counters` at the existing enforcement point — not a parallel limit system.                                                                                                                                                                                                                                                                                                                                                                                                         | FR-ADMIN-14                       | An overridden user's effective cap for the period reflects the override immediately; the override expires/doesn't silently persist unless explicitly set to.                                                                                                                  |
-| M5-015 | Financial ledger & expense tracking                           | Dunning list (failed-payment `payment_events` surfaced for follow-up), Paddle payout summary + separate Bank Alfalah/PKR ledger (both derived views over `payment_events`), refund log (`refunds` table, reason field distinguishing voluntary vs. chargeback), manually-entered expenses log (`expenses` table), net profit = revenue − logged expenses. Depends on `M5-007` (dashboard) and the existing `M4-003`/`M4-004` payment adapters.                                                                                                                                                                              | FR-ADMIN-13                       | A manually-entered expense immediately reduces the displayed net-profit figure; a refund entered with `is_chargeback = true` appears in a distinct view from a voluntary refund.                                                                                              |
-| M5-016 | Capacity/scaling monitoring dashboard (Addendum 4)            | Active user count + growth rate, scans processed per day/week, database size/growth, VPS CPU/RAM/disk (via `capacity_metrics_snapshots`, `ARCHITECTURE.md` §6/§12 — a lightweight periodic-snapshot job, not a full metrics stack), and configurable warning thresholds (`app_config`, ~70–80% sustained usage default) that visibly flag a resource before it becomes an outage. Meaningful VPS-level testing needs `M0-005`'s real VPS provisioned; the Postgres-side metrics and admin UI can be built/tested against a dev/CI Postgres before that.                                                                     | FR-ADMIN-16                       | A resource pushed past its configured threshold in a test environment is visibly flagged in the dashboard, not just recorded in the table.                                                                                                                                    |
-| M5-017 | Security & QA status dashboard (Addendum 5)                   | Visibility surface only — reports what CI/CD and scheduled jobs already found, never runs a scan itself (`ARCHITECTURE.md` §6/§12): last dependency-audit date/result, status of CI's security-related checks (`M0-013` secret-scanning, any SAST step) on the current `main`, any active secret-scanning alerts, and the date + report link of the last full security-review pass. All but the last field read live from GitHub's own API (a token stored via `ADR-0017`'s `integration_credentials`, not a new credential mechanism); the last-review date/link is the one genuinely manual field, an `app_config` entry. | FR-ADMIN-17                       | The dashboard's CI-check and alert fields change automatically when the real GitHub state changes (a newly-introduced failing check or a new secret-scanning alert shows up without anyone updating the dashboard by hand); only the last-review field needs manual updating. |
+#### M4-001: Pricing/tier data model
 
-## M6 — SEO / Marketing Site
+- **Goal:** Create the Postgres tables that hold plan pricing and country-tier assignments, seeded with the confirmed values already in `docs/SRS.md` §5.9 (Tier 1/2/3, the Gulf tier, Pakistan).
+- **Done-when:**
+  - `pricing_tiers` and `country_tier_map` tables exist per `docs/ARCHITECTURE.md` §6's schema sketch, with a Drizzle migration.
+  - Seed data loads all five pricing rows (Tier 1, Gulf, Tier 2, Tier 3, Pakistan) with the exact numbers in `docs/SRS.md`'s seed pricing table.
+  - An admin changing a price in this table (even via direct DB write at this stage — the admin UI is `M5-007`) is reflected on the pricing page without a code deploy.
+- **Must reuse / must not duplicate:** Follow the existing Drizzle schema/migration pattern in `apps/api/src/db/schema.ts` exactly — column naming, `updated_at`/`updated_by` convention (see `feature_flags`'s existing shape in the schema file), RLS-policy placement.
+- **Test requirements:** Unit test the seed data matches `docs/SRS.md`'s table exactly (a literal value-by-value assertion, not just "rows exist"). Integration test against real local Postgres confirming a price read reflects a direct DB update with no code change needed.
+- **Stop-and-ask if:** Any seed value here doesn't match `docs/SRS.md`'s table exactly — don't adjust the SRS to match what you built, flag the mismatch and ask which is right.
 
-| ID     | Title                      | Description                                                            | Requirement(s)              | Done when                                                                                                                           |
-| ------ | -------------------------- | ---------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| M6-001 | Marketing pages            | Home, pricing, features, about — SSR with metadata/OpenGraph per page. | FR-SEO-01                   | Each page's metadata validated (title, description, OG image, canonical).                                                           |
-| M6-002 | Schema.org structured data | `SoftwareApplication`, `FAQPage`, etc.                                 | FR-SEO-02                   | Validates cleanly in a structured-data test tool.                                                                                   |
-| M6-003 | `llms.txt`                 | AI-answer-engine-facing site description.                              | FR-SEO-03                   | Present at site root; claims cross-checked against actual product behavior (esp. accuracy claims, per NFR-ACC honesty requirement). |
-| M6-004 | Blog/CMS scaffold          | Routing/content structure, zero articles required at launch.           | FR-SEO-04                   | Route renders a graceful empty state; content authoring can proceed independently of app deploys.                                   |
-| M6-005 | Crawlability audit         | Confirm no critical content is client-render-only.                     | FR-SEO-05                   | Marketing pages reviewed with JS disabled / view-source; core content present in initial HTML.                                      |
-| M6-006 | Sitemap/robots.txt         | Standard sitemap; admin subdomain excluded/disallowed.                 | FR-ADMIN-01 (robots aspect) | `robots.txt` confirmed to exclude `admin.*`.                                                                                        |
+#### M4-002: `PaymentProviderAdapter` interface + contract test
 
-## M7 — Launch Hardening
+- **Goal:** Define the shared TypeScript interface both Paddle and Bank Alfalah adapters implement, and a contract test any adapter must pass.
+- **Done-when:**
+  - The interface matches `docs/ARCHITECTURE.md` §10's sketch (`createCheckout`, `handleWebhook`, `refund`, `cancel`).
+  - A contract test exists that any adapter can be run against (a shared test suite parameterized by adapter instance), even though neither real adapter exists yet — a trivial fake adapter passes it, proving the test itself works before real adapters are built against it.
+- **Must reuse / must not duplicate:** This interface is the thing `M4-009`'s extensibility proof (and `M4-003`–`007`'s real adapters) implement against — don't let either real adapter grow a method the interface doesn't declare.
+- **Test requirements:** The contract test suite itself, run against a fake/stub adapter.
+- **Stop-and-ask if:** The interface as sketched in `ARCHITECTURE.md` §10 turns out not to cleanly cover something both providers actually need (discovered while building `M4-003`/`M4-006`) — don't bend one adapter around a mismatched interface, flag it and propose the interface change.
 
-| ID     | Title                                                       | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Requirement(s)                     | Done when                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M7-001 | Security review against the threat model                    | Pass over every row in `ARCHITECTURE.md` §13, confirming each mitigation is actually implemented, not just designed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | All NFR-SEC-*                      | Each threat-model row has a linked test or documented manual verification.                                                                                                                                                                                                                                                                                                                                                                           |
-| M7-002 | Rate limiting & upload validation audit                     | Every endpoint reviewed for rate limits (explicitly including login, signup, and password/passphrase reset, Addendum 5) and input validation; CORS configured to accept only explicitly authorized origins, never a wildcard (Addendum 5, `NFR-SEC-17`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | NFR-SEC-04                         | Automated test hits an unprotected-looking endpoint with a burst of requests and confirms throttling.                                                                                                                                                                                                                                                                                                                                                |
-| M7-003 | Signed, expiring export URLs                                | Any export/download that transits the backend uses signed, time-limited URLs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | NFR-SEC-08                         | An export URL fails after its expiry window in a test.                                                                                                                                                                                                                                                                                                                                                                                               |
-| M7-004 | "Delete all my data" self-service flow                      | Teacher-initiated full account/data deletion.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | NFR-PRIV-03                        | Deletion removes the Postgres account record and revokes Drive app access; documented retention policy matches actual behavior.                                                                                                                                                                                                                                                                                                                      |
-| M7-005 | Data retention/deletion policy doc                          | Written policy matching M7-004's actual implementation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | NFR-PRIV-03                        | Legal-readable doc exists and matches code behavior (no policy promising something the code doesn't do, or vice versa).                                                                                                                                                                                                                                                                                                                              |
-| M7-006 | Load/performance testing (concretized, Addendum 4)          | Synthetic load test (k6 or Artillery — both free/open-source) at 1,000 / 5,000 / 10,000 / 20,000 simulated concurrent users, against the server-touching surfaces only: auth, API calls, DB reads/writes, webhook handling, plus dynamic/fuzz testing against unexpected input to find crash points before real users do (Addendum 5 — coordinated into this same task rather than a separate one, since it's the identical target surface and tooling run). **Scanning itself is explicitly out of scope for this test — it's 100% client-side and never touches the server (`NFR-SCALE-01`).** **Does not need to wait for the rest of M7** — run as soon as M3 (auth) + M4 (billing/webhooks) + M5 (admin API) have stable-enough server surfaces to test against, well before real user growth approaches the tested range, same "lives in this milestone's list but isn't gated on the rest of it" pattern as `M1-011`. | NFR-SCALE-02                       | Documented real findings (not an assumption) at whatever point — if any, within the tested range — response time degrades, error rate rises, DB connections exhaust, or VPS headroom runs out. A new ADR (next available number) records the findings and the VPS tier/config needed to comfortably support the 20,000-user target, plus the plan if usage passes it (vertical scaling steps, connection-pool tuning, read replicas if ever needed). |
-| M7-007 | Admin subdomain network-layer hardening                     | Cloudflare Access (or equivalent) in front of admin 2FA login.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | ARCHITECTURE.md §11 recommendation | **[DECISION NEEDED — non-blocking]** confirm before building; not required for the admin panel to function.                                                                                                                                                                                                                                                                                                                                          |
-| M7-008 | Monitoring, alerting, backup verification, incident runbook | Uptime/error monitoring, automated backup-restore drill, a short written incident runbook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | ARCHITECTURE.md §12                | A backup is actually restored to a scratch environment and verified readable, not just "backups exist."                                                                                                                                                                                                                                                                                                                                              |
-| M7-009 | Privacy Policy, Terms of Service, school DPA template       | Legal docs reflecting the actual architecture (esp. the processor/controller framing in NFR-PRIV-01), **and the Addendum-2 caveat to the "we never see your data" claim** — the Public Result Announcement feature (`FR-PUBLISH-*`) is an explicit, narrow exception, and the policy must state it plainly, not omit it (`ADR-0012`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | NFR-PRIV-01, NFR-PRIV-02           | Recommend a legal-professional review pass before publishing, not just an engineering draft — flagged as a real launch dependency outside pure engineering.                                                                                                                                                                                                                                                                                          |
-| M7-010 | ~~Ads integration~~ — **CANCELLED 2026-09-24 (Addendum 2)** | Ads fully cancelled (see `M5-006`). Nothing to build.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | FR-ADMIN-06                        | N/A                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| M7-011 | Launch checklist sign-off                                   | Consolidated go/no-go checklist referencing every M7 task (including `M7-012`–`016`, added after this task’s own ID — read this table for content, not execution order) **plus `M1-011`** (real-device scanning-accuracy validation, Addendum 3) — the one launch-blocking dependency outside M7 itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | —                                  | Founder-reviewed and explicitly approved before flipping the site public. Cannot be signed off while `M1-011` is incomplete or has an unresolved missed NFR-ACC target.                                                                                                                                                                                                                                                                              |
-| M7-012 | SAST, OWASP Top 10 & dependency-audit sweep (Addendum 5)    | Static analysis security review (SAST) across the codebase with all flagged issues resolved or explicitly triaged; an explicit OWASP Top 10 pass (Broken Access Control/IDOR given particular weight — see `M7-013`'s dedicated adversarial test — plus injection and authentication flaws); a final manual dependency-audit pass beyond `M0-004`'s continuous Dependabot coverage, with no known-vulnerable package left unresolved at launch. **Architectural note, not a gap:** the checklist item "passwords hashed with bcrypt/Argon2" does not apply — auth is Google OAuth (no password is ever stored server-side) and the Encryption Passphrase is designed to never leave the client (`ADR-0001`), so there is no server-side password hash to manage for either credential. State this explicitly in the review report as a deliberate architectural match, not an overlooked item.                               | All NFR-SEC-*, NFR-SEC-10          | The review report lists every SAST/OWASP finding and its resolution (fixed, or an explicit accepted-risk note with reasoning), and states the bcrypt/Argon2 non-applicability explicitly rather than silently omitting that checklist line.                                                                                                                                                                                                          |
-| M7-013 | Multi-tenant isolation penetration test (Addendum 5)        | From a real test account, actually attempt — through the running API, not a database-level scoped-connection test — to read another tenant's data. Distinct from `M0-006`'s existing RLS proof (which tests the database policy directly): this attacks the application layer the way a real malicious user would, the adversarial complement `NFR-SEC-01`'s design has never had.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | NFR-SEC-01, NFR-SEC-19             | The attempt and its result are documented regardless of outcome; a successful cross-tenant read is a launch-blocking finding, not a note for later.                                                                                                                                                                                                                                                                                                  |
-| M7-014 | Custom error pages + security headers (Addendum 5)          | Production error responses never expose a raw stack trace or backend implementation detail (custom error pages replacing Next.js's/Fastify's own defaults); security headers (CSP, HSTS, X-Frame-Options, and equivalents) configured at the Caddy layer (`ARCHITECTURE.md` §12) and verified with a free tool (e.g. Mozilla Observatory) against staging.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | NFR-SEC-17                         | A deliberately triggered server error in production mode shows a clean, generic page, not a stack trace; the Observatory scan (or equivalent) passes with no unresolved findings.                                                                                                                                                                                                                                                                    |
-| M7-015 | OWASP ZAP + SSL Labs scan against staging (Addendum 5)      | Automated vulnerability scan (OWASP ZAP) and a TLS/SSL configuration test (SSL Labs) run against a real staging deployment, all findings resolved before launch. Needs `M0-005`'s VPS (or an equivalent staging box) provisioned first — can't meaningfully run against nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | NFR-SEC-17, NFR-SCALE-02           | Both scans' reports are attached to the task's own report, with every finding either resolved or explicitly triaged with reasoning.                                                                                                                                                                                                                                                                                                                  |
-| M7-016 | Manual QA pass on staging (Addendum 5)                      | A full human-driven walkthrough of every core flow (forms, scanning setup, exam creation, results, billing, admin) on a production-like staging deployment — never production, never real user data. Every UI bug or backend error found is fixed and the fix independently re-verified afterward. Genuinely separate from automated test coverage, the same "real-browser verification catches what mocks can't" discipline already established in M1/M2, applied to the whole product rather than one subsystem.                                                                                                                                                                                                                                                                                                                                                                                                           | —                                  | A written walkthrough log exists (what was checked, what was found, what was fixed and re-verified) — not just "QA passed."                                                                                                                                                                                                                                                                                                                          |
+#### M4-003: Paddle — checkout/redirect flow
 
-**`M7-006` (load testing) and the Addendum 5 security/QA tasks (`M7-012`–`016`) do not require the rest of M7 to be underway first** — each can run as soon as the surfaces it actually needs are stable (M7-006: M3/M4/M5's server-touching surfaces; M7-012/014: the codebase as it stands at the time; M7-013: real auth + real tenant-scoped data, i.e. M3 onward; M7-015/016: a staging deployment, i.e. `M0-005`'s VPS). None of this blocks M3 or other in-progress feature work, but per the founder's own framing (Addendum 4 for load testing, Addendum 5 for the rest) it must be fully complete before public launch — don't let "not blocking" quietly drift into "forgotten."
+- **Goal:** A teacher clicking "Upgrade to Pro" (or School) is redirected to a real Paddle-hosted checkout for their plan/billing-period choice.
+- **Done-when:**
+  - `createCheckout` (from `M4-002`'s interface) builds a real Paddle Billing API checkout session and returns a redirect URL.
+  - Completing a **Paddle sandbox** checkout redirects back to the app successfully.
+  - Country/currency at checkout reflects Paddle's own reported billing/card country (`FR-BILLING-03`) — never request IP.
+- **Must reuse / must not duplicate:** Nothing yet exists to reuse here (first real payment-provider code) — but the credential (Paddle API key) must come from `integration_credentials` via `credential-store.ts`'s existing helpers (`ADR-0017`), never a new env var.
+- **Test requirements:** A real test purchase against Paddle's sandbox, not just a mocked HTTP call — the done-when criterion is specifically about a sandbox round-trip actually completing.
+- **Stop-and-ask if:** Paddle's actual current API (checkout creation, specifically) differs materially from what `docs/ARCHITECTURE.md` §10 assumes — this environment previously couldn't reach Paddle's live docs to verify assumptions (see `infra/README.md`'s DNS section note); if you can reach them now and find a mismatch, flag it rather than silently adapting around it.
+
+#### M4-004: Paddle — webhook ingestion + signature verification
+
+- **Goal:** Paddle's subscription-lifecycle webhooks (created/renewed/cancelled/payment-failed) are received, verified, and recorded.
+- **Done-when:**
+  - Every webhook's signature is verified before any payload is trusted (`NFR-SEC-11`) — an unsigned or badly-signed request is rejected, not processed.
+  - Each event writes one `payment_events` row keyed by `provider_event_id` (idempotency — a replayed webhook is a no-op, not a duplicate charge/entitlement change).
+  - `handleWebhook` (from `M4-002`'s interface) returns a `NormalizedPaymentEvent` Paddle-agnostic shape.
+- **Must reuse / must not duplicate:** The `payment_events` table shape from `docs/ARCHITECTURE.md` §6 — don't invent a second events table for Paddle specifically.
+- **Test requirements:** A test sends a correctly-signed sandbox webhook payload and confirms the row lands; a test sends the identical payload twice and confirms only one row exists; a test sends a deliberately mis-signed payload and confirms it's rejected.
+- **Stop-and-ask if:** None beyond the standing list — this is squarely `NFR-SEC-11`'s existing, already-specified requirement.
+
+#### M4-005: Paddle — subscription lifecycle sync
+
+- **Goal:** `subscriptions` table state (`active`/`past_due`/`canceled`/`trialing`) stays correctly in sync with what `M4-004`'s verified webhooks report, end to end.
+- **Done-when:** A sandbox subscription's full lifecycle (created → active → a simulated renewal → a simulated cancellation) is reflected correctly in the `subscriptions` row at every step, driven only by webhook events, with the right entitlement implication at each state (an `active` Pro subscription unlocks Pro features; a `canceled` one doesn't, from its `current_period_end` onward, not immediately — standard SaaS behavior unless the founder says otherwise).
+- **Must reuse / must not duplicate:** `M4-008`'s entitlement-check layer is the single place that reads `subscriptions.status`/`plan` to decide what a user can do — this task writes to that table, it doesn't duplicate the read-side logic anywhere.
+- **Test requirements:** An integration test against real local Postgres driving a subscription through its full sandbox lifecycle via simulated webhook payloads, asserting the `subscriptions` row and resulting entitlement at each step.
+- **Stop-and-ask if:** What "canceled" should mean for entitlement timing (immediate vs. end-of-period) isn't something `docs/SRS.md` states explicitly — this is a real product decision, not an engineering default to pick silently.
+
+#### M4-006: Bank Alfalah — checkout/callback flow
+
+- **Goal:** A Pakistan-billed teacher's upgrade flow completes through Bank Alfalah's PKR checkout.
+- **Done-when:** `createCheckout` builds a real Bank Alfalah checkout/redirect per that gateway's own integration docs; completing a sandbox/UAT transaction (if Bank Alfalah offers one — confirm this, don't assume it mirrors Paddle's sandbox model) redirects back successfully.
+- **Must reuse / must not duplicate:** Same `PaymentProviderAdapter` interface from `M4-002` — this adapter must satisfy the identical contract test `M4-003`'s Paddle adapter does, with zero special-casing visible to the rest of the app.
+- **Test requirements:** A real test transaction against Bank Alfalah's sandbox/UAT environment if one exists; if it genuinely doesn't, say so explicitly in the report and test as thoroughly as possible against documented request/response shapes instead — don't silently substitute a weaker test without flagging the gap.
+- **Stop-and-ask if:** Bank Alfalah has no sandbox/test environment at all (unlike Paddle) — this changes what "done" can mean for this task, and is worth confirming with the founder before treating mocked-only testing as sufficient.
+
+#### M4-007: Bank Alfalah — webhook/callback signature verification + reconciliation
+
+- **Goal:** Bank Alfalah's own callback/webhook mechanism is verified and reconciled into the identical `payment_events`/`subscriptions` shape Paddle uses.
+- **Done-when:** Signature/integrity verification per Bank Alfalah's own scheme (NFR-SEC-11); a verified callback produces the same `NormalizedPaymentEvent` shape `M4-004` produces for Paddle, so nothing downstream (entitlement checks, the admin panel, the revenue dashboard) needs to know which provider a given subscription is on.
+- **Must reuse / must not duplicate:** Same idempotency pattern (`provider_event_id` uniqueness) as `M4-004`.
+- **Test requirements:** Same shape as `M4-004`'s tests, against Bank Alfalah's own callback format.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M4-008: Entitlement/plan-check layer (core)
+
+- **Goal:** One function the rest of the app calls to answer "what plan/limits does this account have," reading from `subscriptions` (both providers, provider-agnostic).
+- **Done-when:** A Free, Pro, and School test account each resolve to the correct plan/limits through this one function; the function is what `M4-003`–`007`'s webhook handlers' writes ultimately feed, and what every later plan-gated feature (`M8`–`M12`) will call.
+- **Must reuse / must not duplicate:** This is the _only_ place entitlement is computed — no future task should read `subscriptions` directly to answer "can this user do X," they call this function.
+- **Test requirements:** Unit tests covering Free/Pro/School and each `subscriptions.status` value's effect on resolved entitlement.
+- **Stop-and-ask if:** None beyond the standing list — but see `M4-009` immediately below, which this task deliberately does **not** yet include.
+
+#### M4-009: Entitlement client-side caching layer (ADR-0015)
+
+- **Goal:** The browser-side cache wrapping `M4-008`'s server endpoint, per `ADR-0015`'s full design — this is what actually makes server-sourced entitlement checks workable for Addendum-2-era features that are 100% client-side computation with no per-action server round-trip.
+- **Done-when:** All four `ADR-0015` scenarios work correctly and are each independently tested: (1) fresh cache, (2) stale-but-online (triggers background revalidation, doesn't block the UI), (3) stale-and-offline (tolerates the stale value rather than failing), (4) never-populated (falls back to the safe Free-tier default, never silently grants Pro/School access with no data at all).
+- **Must reuse / must not duplicate:** The same "cache it in memory/IndexedDB, don't treat it as a permanent client-invented value" discipline already established by `lib/api/drive-token-client.ts` (Drive access token caching) and `lib/crypto/master-key-session.ts` (master key session cache) — read both before designing this one, same project, same tradeoff shape.
+- **Test requirements:** Four distinct test cases, one per scenario above — not just "the cache works," each named scenario explicitly exercised.
+- **Stop-and-ask if:** None beyond the standing list — `ADR-0015` already fully specifies this design; if something in it doesn't fit what `M4-008` actually built, flag the mismatch rather than silently picking a side.
+
+#### M4-010: Free-tier usage counters
+
+- **Goal:** Track weekly scan counts per Free-tier user without any scan content ever reaching the server.
+- **Done-when:** `usage_counters` (per `docs/ARCHITECTURE.md` §6, keyed by `user_id`+`period_start`) increments on exam finalize; the reset point is exactly Monday 00:00 UTC, a fixed point, not a rolling 7-day window; offline increments buffer client-side and reconcile with the server once back online.
+- **Must reuse / must not duplicate:** This is a _count_, not scan content — nothing about this task should need to touch anything the detection engine produces beyond "a scan happened."
+- **Test requirements:** A test confirms the period boundary is the fixed Monday reset, not a rolling window; an offline-buffering test confirms counts aren't lost and aren't double-counted on reconnect.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M4-011: Free-tier usage enforcement UI
+
+- **Goal:** Surface the weekly-cap warning at the right moments, and never any others.
+- **Done-when:** A test session that crosses the 100-scan/week cap **mid-session completes completely uninterrupted** — this is the literal, founder-confirmed rule (`docs/SRS.md` `NFR-SEC-07`): the warning appears only at the _next_ app open or on the dashboard, never as a mid-scan/mid-session interruption, no matter how far over the cap the count goes.
+- **Must reuse / must not duplicate:** `M4-010`'s counters are the data source; this task is purely the UI/timing layer on top, it doesn't touch the counting logic.
+- **Test requirements:** A test that deliberately crosses the cap mid-session and asserts zero interruption during that session, then asserts the warning appears on the _next_ session start.
+- **Stop-and-ask if:** You find yourself wanting to add _any_ mid-session gate "just as a safety net" — don't; this is an explicit, deliberate, founder-confirmed product-trust decision, not an oversight to harden.
+
+#### M4-012: Plan upgrade/downgrade/cancel UI flows
+
+- **Goal:** Teacher-facing plan management.
+- **Done-when:** A Pro-to-Free downgrade correctly re-applies Free-tier limits going forward **without touching historical data** — existing exams/results a Pro-only feature already created (e.g., class analytics computed while still Pro) remain intact and viewable, only _new_ gated actions are blocked.
+- **Must reuse / must not duplicate:** Calls `M4-008`'s entitlement layer and the real `M4-003`–`007` provider adapters' `cancel`/plan-change paths — this task is UI wiring, not new billing logic.
+- **Test requirements:** A test that downgrades a Pro account with existing Pro-only data and confirms that data is still readable, while new Pro-only actions are now blocked.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M4-013: School seat management
+
+- **Goal:** Minimum 5 teacher seats, add/remove, per-teacher/year billing with correct provider proration.
+- **Done-when:** Adding a 6th seat mid-cycle bills correctly per whichever provider (Paddle or Bank Alfalah) the school is on, following that provider's own proration rules — not a Sharlo-invented proration formula.
+- **Must reuse / must not duplicate:** `schools`/`school_members` tables already exist (`M3-014`/`015`) — this task adds billing on top of the existing membership model, it does not rebuild school membership.
+- **Test requirements:** A sandbox test adding a seat mid-cycle and confirming the resulting charge/proration matches the provider's own documented behavior.
+- **Stop-and-ask if:** Paddle's and Bank Alfalah's proration behaviors differ enough that "seat management" can't be one provider-agnostic flow — flag the specific difference rather than papering over it.
+
+#### M4-014: Provider-adapter extensibility proof
+
+- **Goal:** Prove `M4-002`'s interface genuinely supports a third provider without a redesign (`FR-BILLING-05`) — Easypaisa/JazzCash are not built for real, this is a test double only.
+- **Done-when:** A stub/mock third adapter passes `M4-002`'s exact same contract test with **zero changes** to `PaymentProviderAdapter` or either real adapter (`M4-003`–`007`).
+- **Must reuse / must not duplicate:** The contract test from `M4-002` — this task doesn't write a new test, it proves the existing one generalizes.
+- **Test requirements:** The existing contract test, run against the new stub adapter.
+- **Stop-and-ask if:** The interface needs even a small change to fit a third provider — that's real evidence the interface was under-designed, flag it rather than "fixing" the interface silently at this late point.
 
 ---
 
-## M8 — Class Management & Attendance (Addendum 2, Pro/School)
+## M5 — Admin Panel
 
-Depends on M3 (accounts/Drive encryption — nothing here stores data any differently) for daily attendance; `M8-004` additionally depends on M1 (detection engine) and M2 (template geometry) for the exam-day bubble specifically.
+**Rewritten to a deeper specification 2026-10-03 as part of the Cline handoff** — atomized into smaller, single-outcome tasks (21, up from 17, 16 of them real) per the same instruction as M4. No task here has been started. Depends on `M4` existing first (several tasks here call real provider adapters). Read `docs/ARCHITECTURE.md` §11 in full before starting anything here — it's the structural argument for why admins can't decrypt student data, and every task in this milestone must not weaken that argument.
 
-| ID     | Title                                  | Description                                                                                                                                                                                                                                       | Requirement(s)             | Done when                                                                                                                                                                                                          |
-| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| M8-001 | Class/section CRUD + persistent roster | Create classes/sections; add students (name, roll number) — the same underlying record `FR-ROSTER-01`'s per-exam CSV populates, not a parallel list.                                                                                              | FR-ATTEND-01, FR-ATTEND-02 | A student added via a class is immediately usable for roll-number matching on a scan for that class, verified both directions.                                                                                     |
-| M8-002 | Daily attendance marking               | Present/absent/leave, "mark all present then select absentees" flow.                                                                                                                                                                              | FR-ATTEND-03               | 3 taps for a 40-student class with 3 absentees, not 40.                                                                                                                                                            |
-| M8-003 | Attendance history & monthly reports   | One Drive file per class per _month_ (not per day) — deliberate grain choice so a report doesn't cost ~30 file reads.                                                                                                                             | FR-ATTEND-04               | A month's report renders from one Drive read.                                                                                                                                                                      |
-| M8-004 | Exam-day attendance bubble + auto-mark | Template geometry addition (attendance-bubble region, versioned per `ARCHITECTURE.md` §14); read during the normal scan flow, stored as a field on that student's entry in the exam's `examResults` record — no extra Drive round-trip per sheet. | FR-ATTEND-05               | Scanning a class produces per-student attendance with zero extra teacher action; a sheet with an ambiguous attendance mark routes to the Review Queue like any other ambiguous mark (`NFR-ACC-03`), never guessed. |
-| M8-005 | Free-tier gating for Class Management  | Wire the `M4-005` entitlement check into every Class Management entry point.                                                                                                                                                                      | NFR-SEC-12 (b)             | A Free-plan test account sees Class Management as locked/upsell, not silently broken or half-working.                                                                                                              |
+**The original "ads on/off toggle" task is cancelled, not deferred** (`docs/SRS.md` `FR-ADMIN-06`) — no ad placement exists anywhere in this product, any plan. It is not renumbered into this milestone's new IDs below; there's nothing to build.
 
-## M9 — Exam Configuration & Grading (Addendum 2, Pro/School)
+#### M5-001: Admin subdomain scaffold + 2FA/passkey login
 
-Depends on M1 (detection engine — `M9-002` specifically needs a new bubble-region type) and M2 (exam creation/templates).
+- **Goal:** A separate deploy target (subdomain) with server-side-enforced 2FA or passkey login, not indexable by search engines.
+- **Done-when:** Login without completing 2FA fails closed (no partial access); `robots.txt`/meta-robots confirm the subdomain is `noindex, nofollow`.
+- **Must reuse / must not duplicate:** This is the first admin-specific route tree — decide here (per `docs/ARCHITECTURE.md` §3's own open question) whether it's a route group inside the existing `web` workspace or a genuinely separate `apps/admin` workspace, and say which you chose and why in the report; either is acceptable, but the choice should be deliberate, not incidental.
+- **Test requirements:** A test attempting admin-panel access with a valid session but incomplete 2FA, confirming it's rejected; a live check of the deployed `robots.txt`.
+- **Stop-and-ask if:** None beyond the standing list.
 
-| ID     | Title                                   | Description                                                                                                                                  | Requirement(s) | Done when                                                                                                                                                                                                             |
-| ------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M9-001 | Negative marking                        | Per-exam configurable deduction per wrong answer.                                                                                            | FR-EXAMCFG-01  | Deduction applies only to confidently-wrong answers, never to an unresolved Review-Queue item.                                                                                                                        |
-| M9-002 | Multiple sets/versions + auto-detect    | Set-code bubble region (new template geometry type, analogous to roll-number reading); read before scoring, selects the matching answer key. | FR-EXAMCFG-02  | A sheet whose set code doesn't match any configured set routes to the Review Queue, never guessed.                                                                                                                    |
-| M9-003 | Partial credit / void question + recalc | Mark a question void or multi-correct after scanning; recompute every already-scanned sheet for that exam.                                   | FR-EXAMCFG-03  | Depends on the `examResults`-is-one-file-per-exam clarification (`ARCHITECTURE.md` §7) — recalc is one read-recompute-write, verified against a fixture class, and is deterministic (same input twice → same output). |
-| M9-004 | Grade bands                             | Configurable mark-range → letter-grade mapping.                                                                                              | FR-EXAMCFG-04  | Changing the scale re-renders grades from stored scores without re-scanning.                                                                                                                                          |
-| M9-005 | Exam/template reuse                     | "Duplicate this exam" — configuration only, never carries over a prior answer key or results.                                                | FR-EXAMCFG-05  | Duplicating an exam and immediately checking results shows an empty, unscored state, not the original's data.                                                                                                         |
+#### M5-002: Audit log infrastructure
 
-## M10 — Results, Reporting & Analytics (Addendum 2, Pro/School)
+- **Goal:** Append-only `admin_audit_log`, genuinely tamper-resistant at the database permission level.
+- **Done-when:** An attempt to `UPDATE`/`DELETE` an audit row via the application's restricted DB role fails at the Postgres permission level itself — tested directly against the real restricted role, not just asserted in application code (which a bug could bypass).
+- **Must reuse / must not duplicate:** The existing restricted `app_user` role (`provision-app-role.ts`) — this task adds the missing grant restriction to it, it doesn't create a second DB role.
+- **Test requirements:** A test connecting as the actual restricted role and attempting the forbidden operation directly, confirming Postgres itself rejects it.
+- **Stop-and-ask if:** None beyond the standing list.
 
-Depends on M3 (results infrastructure `FR-RESULTS-*` already built); `M10-005`/`M10-007` additionally depend on M8 (attendance data for report cards) and M9 (grade bands).
+#### M5-003: User & subscription list/detail view
 
-| ID      | Title                              | Description                                                                                                                                   | Requirement(s)  | Done when                                                                                                                                                                                                        |
-| ------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M10-001 | Performance trend chart            | Per-student score trend across exams.                                                                                                         | FR-ANALYTICS-01 |                                                                                                                                                                                                                  |
-| M10-002 | Class/section comparison           | Side-by-side section averages.                                                                                                                | FR-ANALYTICS-02 |                                                                                                                                                                                                                  |
-| M10-003 | Question tagging + topic analytics | Free-text topic tags per question; surfaces the class's weakest topics.                                                                       | FR-ANALYTICS-03 |                                                                                                                                                                                                                  |
-| M10-004 | Roll-number auto-suggestion        | Suggests next unused roll number when adding a student.                                                                                       | FR-ANALYTICS-04 | Client-side computation over the existing roster, no server round-trip.                                                                                                                                          |
-| M10-005 | Report card template               | Branded (school name/logo/color theme, shared config with `M12-005`), combines exam results + attendance into one printable PDF.              | FR-ANALYTICS-05 | Supersedes the old `FR-RESULTS-05` simple card (removed from `M3-010`) — this is the only printable-card path going forward.                                                                                     |
-| M10-006 | Leaderboard                        | Top-10/Top-3 default; own-rank always visible even outside the visible list; full-class view is an explicit teacher opt-in, never default-on. | FR-ANALYTICS-06 | A regression that defaults the full leaderboard on is treated as `NFR-ACC-03`-severity, not a minor bug — it's a student-wellbeing product-safety rule, stated as such in the PR description of any change here. |
-| M10-007 | Term / Consolidated report         | Teacher picks any subset of a class's scored exams; one consolidated per-student report (totals, per-exam breakdown, overall %, grade band).  | FR-ANALYTICS-07 | Pure aggregation of already-stored `examResults` — no new storage, no re-scanning; reuses `M10-005`'s branding/template.                                                                                         |
+- **Goal:** Admin can see and search the list of teacher/school accounts and view one account's detail (plan, status, usage).
+- **Done-when:** Search/list works against real accounts; detail view shows plan, subscription status, and recent usage-counter history, read-only at this stage (block/refund/plan-change are separate tasks below).
+- **Must reuse / must not duplicate:** Reads `M4-008`'s entitlement layer and `subscriptions`/`usage_counters` directly — this view never needs Drive access or decryption of anything (per `ARCHITECTURE.md` §11's structural guarantee).
+- **Test requirements:** A test confirming the detail view never attempts to request or display anything Drive- or decryption-related for any account.
+- **Stop-and-ask if:** None beyond the standing list.
 
-## M11 — Manual Import & Safe Editable Results (Addendum 2)
+#### M5-004: Time-limited user suspension
 
-**Free/Pro/School split within this milestone, not uniformly Pro/School**: the editable-grid component itself (`M11-004`) is the same component `M3-008` builds and is free — what's gated is the import _entry point_ (`M11-001`–`003`, `005`–`007`), per `§5.9a`'s table note. Depends on `M3-008` existing first (the grid's first call site).
+- **Goal:** Admin can suspend a user's access for a set duration, which lifts itself automatically.
+- **Done-when:** A suspension set with an expiry lifts itself with **no further admin action** — a test that sets a short expiry and confirms access returns on its own, not via a background job that might be delayed arbitrarily, nor an admin having to remember to come back.
+- **Must reuse / must not duplicate:** The `users.suspended_until` column already specified in `docs/ARCHITECTURE.md` §6 — a plain `now() < suspended_until` check at auth time (or the same lightweight scheduler class already used for the Recovery Key reminder job) is the specified mechanism, not a new suspension-state machine.
+- **Test requirements:** The self-expiry test described above, plus a test confirming a _non_-expired suspension correctly blocks access.
+- **Stop-and-ask if:** None beyond the standing list.
 
-| ID      | Title                                    | Description                                                                                                                               | Requirement(s)             | Done when                                                                                                                                               |
-| ------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M11-001 | Client-side Excel/CSV parsing            | SheetJS or equivalent, no server involvement.                                                                                             | FR-IMPORT-01               |                                                                                                                                                         |
-| M11-002 | Column-mapping screen                    | Deterministic string-similarity pre-fill, teacher always confirms/adjusts before proceeding.                                              | FR-IMPORT-02               | The pre-fill logic is a fixed, testable heuristic — explicitly **not** a model call (`ADR-0014`).                                                       |
-| M11-003 | Pre-save validation suite                | Missing/duplicate roll numbers, column-count mismatches, non-numeric marks, roster row-count mismatch (explicit missing/extra lists).     | FR-IMPORT-03, FR-IMPORT-04 | Every check listed in `FR-IMPORT-03` has a corresponding fixture test; issues are visibly highlighted in the preview before any save path is reachable. |
-| M11-004 | Confirm/Save gating                      | Disabled until resolved, or an explicit "save anyway" override distinct from the normal save action.                                      | FR-IMPORT-05               |                                                                                                                                                         |
-| M11-005 | Reusable editable-grid component         | **The same component as `M3-008`**, extended with a second call site (import-row correction) — not a second implementation.               | FR-IMPORT-06               | A fix made via one call site's usage is verifiably the same code path as the other (e.g., a shared component test, not two divergent ones).             |
-| M11-006 | Post-import dashboard note               | "Imported on [date] — if something looks missing, re-check the import."                                                                   | FR-IMPORT-07               |                                                                                                                                                         |
-| M11-007 | Universal formula-injection sanitization | Shared utility (`ADR-0013`) applied on this import path _and_ retrofit-verified against every existing export path (`M3-010` and beyond). | FR-IMPORT-08, ADR-0013     | A fixture with a `=`-leading cell survives import → display → export as literal text at every touchpoint, not just the new one.                         |
+#### M5-005: Refund action (provider-adapter-routed)
 
-## M12 — Public Result Announcement / STRAI (Addendum 2, Pro/School)
+- **Goal:** Admin-initiated refund routes to the correct payment provider.
+- **Done-when:** Refunding a Bank Alfalah subscriber calls the Bank Alfalah adapter, never Paddle's, and vice versa — a test proves this by asserting _which_ adapter method was actually invoked, not just that a refund "succeeded."
+- **Must reuse / must not duplicate:** `M4-002`'s `PaymentProviderAdapter.refund` — this task is admin-UI wiring onto an already-built capability, not new refund logic.
+- **Test requirements:** The adapter-routing test described above, for both providers.
+- **Stop-and-ask if:** None beyond the standing list.
 
-Depends on M3 (exam results must exist to publish) and M4 (billing/entitlement — this is a real server endpoint, `NFR-SEC-12` category (a)). The one milestone that adds genuinely public-facing (unauthenticated) attack surface — see `ADR-0012`, `ARCHITECTURE.md` §7a before starting any task here.
+#### M5-006: Admin-initiated plan change
 
-| ID      | Title                                        | Description                                                                                                                | Requirement(s)                           | Done when                                                                                                                                                                       |
-| ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M12-001 | `public_results` table + STRAI ID generation | New Postgres table (`ARCHITECTURE.md` §6); ≥128-bit CSPRNG entropy, Crockford Base32 encoding.                             | FR-PUBLISH-02, NFR-SEC-13                | A generated ID's entropy is verified (not just "looks random") — e.g., a statistical sanity check in the test suite, not just eyeballing output.                                |
-| M12-002 | Publish flow                                 | Client extracts exactly 4 fields (name, roll, marks, grade) from already-decrypted exam data, `POST`s to the new endpoint. | FR-PUBLISH-01                            | Code-level check (typed payload, not just a description) that no 5th field can be attached — a test that tries and fails to smuggle an extra field through.                     |
-| M12-003 | Public lookup endpoint                       | `(straiId, rollNumber) → one row or generic not-found`, rate-limited per IP, CAPTCHA after a few failed attempts.          | FR-PUBLISH-03, FR-PUBLISH-04, NFR-SEC-14 | Wrong-roll-number-valid-ID and invalid-ID produce byte-identical responses; burst requests trigger rate limiting and then CAPTCHA.                                              |
-| M12-004 | Expiry + account-deletion cascade            | `app_config.public_result_ttl_days`-driven expiry; deleted on owning account deletion.                                     | FR-PUBLISH-05, FR-PUBLISH-09             | An expired ID's lookup is indistinguishable from an invalid one; `M7-004`'s account-deletion test coverage explicitly includes confirming zero surviving `public_results` rows. |
-| M12-005 | Branding config                              | School name/logo/color theme, one config reused by `M10-005`.                                                              | FR-PUBLISH-06                            |                                                                                                                                                                                 |
-| M12-006 | QR code generation                           | Client-side, deep-links to the check page with STRAI ID pre-filled.                                                        | FR-PUBLISH-07                            | No server round-trip to produce the code.                                                                                                                                       |
-| M12-007 | Check-page leaderboard                       | Same Top-N-default, opt-in-full rule as `M10-006`.                                                                         | FR-PUBLISH-08                            |                                                                                                                                                                                 |
+- **Goal:** Admin can change a user's plan directly (support resolution, goodwill, etc.).
+- **Done-when:** Changing a user's plan from the admin panel has the identical downstream effect as that user changing their own plan via `M4-012` — no second, divergent code path for "what happens when a plan changes."
+- **Must reuse / must not duplicate:** `M4-008`/`M4-012`'s existing plan-change logic — this task is a second _trigger_ for the same effect, not a reimplementation.
+- **Test requirements:** A test confirming admin-initiated and self-service plan changes produce byte-identical resulting entitlement state.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-007: Pricing/country-tier editor UI
+
+- **Goal:** Admin UI over `M4-001`'s pricing data model.
+- **Done-when:** A price changed here reflects on the real pricing page within the cache-invalidation window stated in `docs/SRS.md` `FR-BILLING-02` (target: immediate to <5 min) — not just "the DB row changed."
+- **Must reuse / must not duplicate:** `M4-001`'s tables directly — no shadow config.
+- **Test requirements:** An end-to-end-ish test (or documented manual check) confirming a price edit actually reaches the pricing page's rendered output within the stated window.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-008: Feature flags
+
+- **Goal:** Flags segmentable by user/plan/cohort.
+- **Done-when:** A flag scoped to "Pro plan only" correctly shows/hides for a real Free-plan test account vs. a real Pro-plan test account.
+- **Must reuse / must not duplicate:** `feature_flags` table already specified in `docs/ARCHITECTURE.md` §6.
+- **Test requirements:** The Free-vs-Pro visibility test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-009: Revenue analytics dashboard
+
+- **Goal:** MRR, ARR, churn, Free→Pro conversion rate, revenue by country/tier, multi-currency normalized.
+- **Done-when:** A PKR test transaction and a USD test transaction both roll up correctly into one normalized MRR figure; gross vs. net-of-processor-fees both shown (`docs/ARCHITECTURE.md` §10's cash-basis finance note — not accrual accounting, a deliberate v1 simplification).
+- **Must reuse / must not duplicate:** `payment_events`/`subscriptions` as the source of truth — this is a read/aggregation view, it writes nothing new.
+- **Test requirements:** The multi-currency normalization test described above, with real sandbox transactions from both providers.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-010: Error/crash log viewer + scrubbing layer
+
+- **Goal:** Admin can view application errors, with student PII structurally incapable of appearing in them.
+- **Done-when:** A deliberately triggered error containing a fake "student name"-shaped field in the request body does **not** appear in the log viewer — verified by actually triggering it and checking, not by reading the scrubbing code and assuming it works.
+- **Must reuse / must not duplicate:** The allow-list approach specified in `docs/ARCHITECTURE.md` §11 (a new endpoint is unlogged-by-default until explicitly reviewed) — never a block-list, which silently fails open for anything new.
+- **Test requirements:** The deliberate-PII-shaped-error test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-011: Announcement/broadcast system
+
+- **Goal:** Admin messages all users or a segment.
+- **Done-when:** A segmented broadcast reaches only the intended segment in a test.
+- **Must reuse / must not duplicate:** `M5-008`'s segmentation logic if it's shaped the same way — don't build a second cohort-definition mechanism.
+- **Test requirements:** The segment-targeting test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-012: Support inbox
+
+- **Goal:** Incoming tickets with open/resolved status and a per-ticket thread view.
+- **Done-when:** A ticket's full thread (customer messages + admin replies, in order) renders correctly; the open/resolved filter works.
+- **Must reuse / must not duplicate:** `support_tickets`/`support_messages` tables already specified in `docs/ARCHITECTURE.md` §6 — note these are **ordinary plaintext tables**, deliberately not held to the client-side-encryption standard (it's founder-operational data, not student data) — don't over-engineer encryption onto this table.
+- **Test requirements:** The thread-ordering and status-filter tests described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-013: Admin "cannot decrypt" structural verification
+
+- **Goal:** A written, reviewable, repeatable check confirming no admin code path ever receives key material or Drive content — the same CI-enforced pattern `M3-017`'s `check-no-decrypt-in-backend.mjs` already established for the School-plan dashboard, generalized to the whole admin panel.
+- **Done-when:** A repeatable check (ideally a CI job, same shape as the existing guard) exists that would fail if any future admin-panel code added a dependency or code path capable of decryption.
+- **Must reuse / must not duplicate:** `apps/api/scripts/check-no-decrypt-in-backend.mjs` is the existing pattern to extend or generalize, not a second, parallel mechanism.
+- **Test requirements:** A test proving the guard actually fails when a forbidden dependency/import is deliberately introduced (the same "verified both directions" discipline `M3-011`'s OAuth-scope guard used).
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-014: No-code Settings/Integrations panel
+
+- **Goal:** Admin UI over `M0-010`'s `integration_credentials` table — add/update/rotate any provider credential with zero redeploy.
+- **Done-when:** Saving a new credential here is immediately usable server-side with no deploy; the panel **never** echoes a previously-saved value back in decrypted form, only accepts an overwrite.
+- **Must reuse / must not duplicate:** `credential-store.ts`'s existing AES-256-GCM helpers (`ADR-0017`) — this task is the UI layer, not a new storage mechanism.
+- **Test requirements:** A test confirming a GET-style read of this panel's data never returns a decrypted secret value, even to an authenticated admin.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-015: AI-drafted support reply — PII sanitization pass
+
+- **Goal:** Before any ticket content reaches a third-party AI provider, mask anything that looks like a roll number, a long digit sequence, or another likely personal identifier.
+- **Done-when:** A fixture ticket containing a roll-number-shaped string is masked in the **actual outbound request payload** sent to the AI provider — verified by inspecting what's actually sent over the wire (or to a mocked provider client), not just the sanitization function's return value in isolation.
+- **Must reuse / must not duplicate:** This sanitization pass is unconditional, applied to **every** outbound call, not just tickets that "look like" they might contain something sensitive — see `docs/ADR/0016-ai-assisted-support-reply-drafting.md`, `NFR-SEC-15`.
+- **Test requirements:** The wire-level inspection test described above.
+- **Stop-and-ask if:** You're tempted to make sanitization conditional on ticket content "looking sensitive" — don't; apply it unconditionally, every time, per the ADR.
+
+#### M5-016: AI-drafted support reply — draft generation + attach-to-ticket UI
+
+- **Goal:** Generate a draft reply from a ticket (post-sanitization, `M5-015`) + a founder-maintained knowledge base, attached to the ticket but never auto-sent.
+- **Done-when:** A draft attaches to the ticket as `sender_type = 'ai_draft'` with `sent_at` left null; a test confirms **no code path anywhere** sets `sent_at` on an AI draft without an explicit, separate human send action.
+- **Must reuse / must not duplicate:** `M5-012`'s support inbox (attaches to it) and `M5-014`'s credential panel (reads the AI provider key from it) — depends on both existing first.
+- **Test requirements:** The no-auto-send test described above — this is the single most important invariant of this whole feature (`ADR-0016`).
+- **Stop-and-ask if:** Anything about this feature starts drifting toward touching student data or exam content in any way — that's squarely `ADR-0014`'s forbidden territory; this feature is support-ticket drafting only, never a precedent for AI near student data.
+
+#### M5-017: Per-user scan-quota override
+
+- **Goal:** Admin grants a specific user extra scans for the current (or a chosen) period, beyond `FR-BILLING-06`'s standard weekly cap.
+- **Done-when:** An overridden user's effective cap for the period reflects the override immediately; the override does not silently persist forever unless the admin explicitly sets it that way (a one-period bump is the common case).
+- **Must reuse / must not duplicate:** Read alongside `M4-010`'s `usage_counters` at the **same** enforcement point `M4-011` already built — not a parallel limit system.
+- **Test requirements:** A test confirming an override takes effect immediately and expires/doesn't-expire exactly as configured.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-018: Financial ledger — dunning list + payout/PKR ledger views
+
+- **Goal:** Surface failed-payment follow-up and the two separate payout views (Paddle payout summary, Bank Alfalah/PKR ledger) founder-facing views need, kept distinct since they have different tax/reporting treatment.
+- **Done-when:** A failed-renewal webhook event (already ingested per `M4-004`/`007`'s `NFR-SEC-11` work) appears as a dunning-list row for founder follow-up, not just a silent `subscriptions.status` change; the two payout views are both derived from `payment_events` (no new source-of-truth table), kept visually/structurally separate.
+- **Must reuse / must not duplicate:** `payment_events` as the one source of truth — these are report views over it, not new tables duplicating its data.
+- **Test requirements:** A test confirming a failed-payment event produces a dunning-list entry; a test confirming Paddle and Bank Alfalah transactions each land in their correct, separate view.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-019: Financial ledger — refund log + expenses log + net profit
+
+- **Goal:** `refunds` (with a `reason` field distinguishing voluntary vs. chargeback) and `expenses` (manually entered) tables, and a net-profit = revenue − expenses calculation.
+- **Done-when:** A manually-entered expense immediately reduces the displayed net-profit figure; a refund entered with `is_chargeback = true` appears in a visibly distinct view from a voluntary refund.
+- **Must reuse / must not duplicate:** `refunds`/`expenses` tables already specified in `docs/ARCHITECTURE.md` §6 — cash-basis, consistent with `M5-009`'s existing revenue-dashboard approach, not a new accrual-accounting model.
+- **Test requirements:** The expense-reduces-net-profit test and the chargeback-vs-voluntary-view-separation test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-020: Capacity/scaling monitoring dashboard
+
+- **Goal:** Active-user count/growth, scans-processed-per-day/week (the server-touching sync activity, not the client-side scan itself), DB size/growth, VPS CPU/RAM/disk, with configurable warning thresholds.
+- **Done-when:** A resource pushed past its configured threshold in a test environment is **visibly flagged in the dashboard**, not just recorded silently in `capacity_metrics_snapshots`.
+- **Must reuse / must not duplicate:** The lightweight periodic-snapshot design already specified in `docs/ARCHITECTURE.md` §6/§12 (the same in-process scheduler already driving the Recovery Key reminder job) — do not reach for a Prometheus/node_exporter stack for one VPS.
+- **Test requirements:** The threshold-crossing-visibly-flagged test described above. Meaningful VPS-level testing needs a real VPS (`M0-005`, founder-blocked, see `HANDOFF.md` §4) — the Postgres-side metrics and admin UI can and should be built/tested against dev/CI Postgres before that exists.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M5-021: Security & QA status dashboard
+
+- **Goal:** A visibility-only surface reporting what CI/CD and scheduled jobs already found — last dependency-audit result, CI security-check status on current `main`, active secret-scanning alerts, last full security-review date/link. **Never runs a scan itself.**
+- **Done-when:** The dashboard's CI-check and alert fields change automatically when real GitHub state changes (a newly-failing check or a new secret-scanning alert appears with no one updating the dashboard by hand); only the last-review date/link is a manual `app_config` field.
+- **Must reuse / must not duplicate:** Reads live from GitHub's own API (via a token in `integration_credentials`, `ADR-0017`) — do not mirror GitHub's own state into a second, driftable Sharlo-owned table.
+- **Test requirements:** A test confirming the dashboard reflects a real (or realistically mocked) GitHub API response rather than a hardcoded value.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M6 — SEO / Marketing Site
+
+Not atomized further — these six tasks are already single-outcome. Deep-spec format applied for consistency.
+
+#### M6-001: Marketing pages
+
+- **Goal:** Home, pricing, features, about — server-rendered with per-page metadata/OpenGraph.
+- **Done-when:** Each page's metadata (title, description, OG image, canonical URL) validates correctly, checked per page, not just on the home page.
+- **Must reuse / must not duplicate:** The existing `(marketing)` route group (`apps/web/app/(marketing)/`) already scaffolded — extend it, don't create a second marketing route tree.
+- **Test requirements:** A metadata-validation check per page.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M6-002: Schema.org structured data
+
+- **Goal:** `SoftwareApplication`, `FAQPage`, and similar structured data on relevant pages.
+- **Done-when:** Validates cleanly in a structured-data test tool.
+- **Must reuse / must not duplicate:** N/A — new, self-contained.
+- **Test requirements:** The structured-data validation check.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M6-003: `llms.txt`
+
+- **Goal:** An AI-answer-engine-facing site description.
+- **Done-when:** Present at site root; every claim in it is cross-checked against actual product behavior — **especially accuracy claims**, which must match `NFR-ACC-03`'s honesty requirement (never claim unattended 100% accuracy).
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A manual cross-check against `docs/SRS.md`'s actual accuracy language, documented in the task's report.
+- **Stop-and-ask if:** Any marketing claim you're tempted to write here overstates what `docs/SRS.md`/`NFR-ACC-*` actually guarantee — don't write the stronger claim and flag it later; don't write it at all.
+
+#### M6-004: Blog/CMS scaffold
+
+- **Goal:** Routing/content structure, zero articles required at launch.
+- **Done-when:** The route renders a graceful empty state; content authoring can proceed independently of app deploys.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** The empty-state render check.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M6-005: Crawlability audit
+
+- **Goal:** Confirm no critical marketing content is client-render-only.
+- **Done-when:** Marketing pages reviewed with JS disabled / view-source confirm core content is present in the initial HTML.
+- **Must reuse / must not duplicate:** N/A — an audit, not new code (though it may surface fixes to apply to `M6-001`).
+- **Test requirements:** The JS-disabled/view-source check, documented per page.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M6-006: Sitemap/robots.txt
+
+- **Goal:** Standard sitemap; admin subdomain excluded.
+- **Done-when:** `robots.txt` confirmed to exclude `admin.*` (coordinates with `M5-001`'s own `noindex` requirement — this is the sitewide-config half of the same guarantee).
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A live check of the deployed `robots.txt`.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M7 — Launch Hardening
+
+**Rewritten to a deeper specification 2026-10-03 as part of the Cline handoff** — atomized into smaller, single-outcome tasks (24, up from 16, 15 of them real) per the same instruction as M4/M5. No task here has been started. **`M7-008` (load test) and `M7-009` (fuzz testing), and `M7-018`–`M7-023` (the pre-launch security/QA sweep) do not need to wait for the rest of M7** — each can run as soon as the server surfaces it needs are stable (load/fuzz testing: once M3/M4/M5's server surfaces exist; the pentest: once real auth + real tenant data exists, i.e. M3 onward; the ZAP/SSL Labs scan and manual QA pass: once a real staging deployment exists, i.e. `M0-005`'s VPS). They must all still be **fully complete before public launch** regardless of when they ran — don't let "didn't have to wait" become "got forgotten."
+
+**The original "ads integration" task is cancelled** (`docs/SRS.md`, see `M5`'s own cancellation note above) — nothing to build, not renumbered into this milestone.
+
+#### M7-001: Security review against the threat model
+
+- **Goal:** Pass over every row in `docs/ARCHITECTURE.md` §13, confirming each listed mitigation is actually implemented, not just designed.
+- **Done-when:** Each threat-model row has a linked test or a documented manual verification — not a restatement of the design, actual evidence it's real.
+- **Must reuse / must not duplicate:** N/A — a review task.
+- **Test requirements:** Evidence (a test reference, or a documented manual check) per threat-model row, all of them.
+- **Stop-and-ask if:** Any row's mitigation turns out not to actually be implemented — that's a real gap found this late, flag it loudly, don't quietly patch it as part of "the review."
+
+#### M7-002: Rate limiting on every endpoint
+
+- **Goal:** Every backend endpoint has rate limiting, explicitly including login, signup, and any password/passphrase-reset-equivalent flow.
+- **Done-when:** An automated test hits a previously-unprotected-looking endpoint with a burst of requests and confirms throttling.
+- **Must reuse / must not duplicate:** `@fastify/rate-limit`, already in use for the email-OTP routes (`M3-005`) — extend its use, don't introduce a second rate-limiting mechanism.
+- **Test requirements:** The burst-request throttling test, run against every endpoint, not a sample.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-003: Upload/input validation audit
+
+- **Goal:** Every endpoint accepting input is reviewed for validation (size, type, shape).
+- **Done-when:** A documented audit trail exists per endpoint; any gap found is fixed, not just noted.
+- **Must reuse / must not duplicate:** Zod schemas, the existing validation pattern throughout `apps/api/src/routes/`.
+- **Test requirements:** A test per fixed gap, confirming the previously-missing validation now rejects bad input.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-004: CORS restricted to explicit origin allowlist
+
+- **Goal:** CORS accepts only explicitly authorized origins, never a wildcard (`NFR-SEC-17`).
+- **Done-when:** A request from an unauthorized origin is rejected in a live test against the deployed config.
+- **Must reuse / must not duplicate:** `@fastify/cors` configuration — one explicit allowlist, not scattered per-route configuration.
+- **Test requirements:** The unauthorized-origin-rejected test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-005: Signed, expiring export URLs
+
+- **Goal:** Any export/download that transits the backend uses signed, time-limited URLs.
+- **Done-when:** An export URL fails after its expiry window in a test.
+- **Must reuse / must not duplicate:** N/A — new, self-contained signing mechanism; check whether most exports (CSV/Excel, built entirely client-side per `M3-010`) even transit the backend at all before assuming this applies broadly — it may apply to very little in this architecture.
+- **Test requirements:** The expiry test described above.
+- **Stop-and-ask if:** You find that **no** export actually transits the backend (client-side export is the norm in this product) — confirm with the founder whether this task has any real surface to apply to before building a mechanism for a case that may not exist.
+
+#### M7-006: "Delete all my data" self-service flow
+
+- **Goal:** Teacher-initiated full account/data deletion.
+- **Done-when:** Deletion removes the Postgres account record, revokes Drive app access, and — critically — cascades to delete any `public_results` rows the account owns (`FR-PUBLISH-09`), confirmed by a test that specifically checks zero surviving `public_results` rows after deletion, not just the main account tables.
+- **Must reuse / must not duplicate:** N/A — but must account for _every_ table with a foreign key to the deleted user, including `public_results`, which is easy to miss since it's not RLS-scoped like everything else (`docs/ARCHITECTURE.md` §7a).
+- **Test requirements:** The `public_results`-cascade test described above is non-negotiable, not optional coverage.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-007: Data retention/deletion policy doc
+
+- **Goal:** A written policy matching `M7-006`'s actual implementation.
+- **Done-when:** The policy document's claims match code behavior exactly — no promise the code doesn't keep, no code behavior the policy doesn't disclose.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A line-by-line cross-check against `M7-006`'s actual behavior, documented in the report.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-008: Synthetic load test
+
+- **Goal:** A measured (not assumed) answer to how this architecture performs at 1,000 / 5,000 / 10,000 / 20,000 simulated concurrent users, against server-touching surfaces only (auth, API, DB, webhooks — **never scanning**, which is 100% client-side and never touches the server).
+- **Done-when:** Real, documented findings exist — at whatever point (if any) within the tested range response time degrades, error rate rises, DB connections exhaust, or VPS headroom runs out. A new ADR (next available number) records the findings and a concrete VPS-tier/scaling-plan recommendation for beyond 20k users.
+- **Must reuse / must not duplicate:** k6 or Artillery (either free/open-source tool is acceptable — your choice).
+- **Test requirements:** The load test itself, against a real staging-equivalent deployment if possible.
+- **Stop-and-ask if:** None beyond the standing list — but this needs `M0-005`'s VPS or an equivalent to produce a meaningful result; test against the best available environment and say explicitly in the report if it's not a real production-equivalent box.
+
+#### M7-009: Dynamic/fuzz testing
+
+- **Goal:** Fuzz/unexpected-input testing against the same server-touching surfaces `M7-008` targets, to find crash points before real users do.
+- **Done-when:** Findings (if any) are documented and fixed, not just discovered.
+- **Must reuse / must not duplicate:** Can reuse `M7-008`'s same target-surface list and tooling setup where applicable.
+- **Test requirements:** The fuzz-testing run itself, with a findings log.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-010: Admin subdomain network-layer hardening **[DECISION NEEDED — non-blocking]**
+
+- **Goal:** Add a network-layer restriction (e.g., Cloudflare Access) in front of the admin 2FA login, beyond the spec's baseline.
+- **Done-when:** N/A until the founder confirms or declines this — see `docs/ARCHITECTURE.md` §11's existing "Recommended hardening" note and §15 resolution-log item 4. This is explicitly not required for the admin panel to function.
+- **Must reuse / must not duplicate:** DNS is already Cloudflare-proxied for the admin subdomain specifically to keep this option open (`infra/README.md`) — if confirmed, this is a Cloudflare Access configuration task, not new application code.
+- **Test requirements:** N/A until confirmed.
+- **Stop-and-ask if:** Always — this entire task is a standing stop-and-ask. Confirm with the founder before building anything here, even though it's low-risk.
+
+#### M7-011: Uptime/error monitoring + alerting
+
+- **Goal:** Real monitoring and alerting on the production deployment.
+- **Done-when:** A deliberately triggered failure (e.g., stopping a container) produces a real alert.
+- **Must reuse / must not duplicate:** Keep this proportionate to a single-VPS solo-founder deployment — a free/cheap uptime-check service plus the existing scrubbed error-log pipeline (`M5-010`) is enough; don't reach for a full observability stack.
+- **Test requirements:** The deliberate-failure-triggers-alert test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-012: Backup-restore drill
+
+- **Goal:** Prove a real database backup actually restores, not just that backups exist.
+- **Done-when:** A real backup is restored to a scratch environment and confirmed readable — actual data, not a file-existence check.
+- **Must reuse / must not duplicate:** The nightly `pg_dump` mechanism already specified in `docs/ARCHITECTURE.md` §12.
+- **Test requirements:** The actual restore-and-verify drill, documented with what was restored and confirmed.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-013: Incident runbook
+
+- **Goal:** A short, written, practical runbook for responding to a production incident.
+- **Done-when:** The runbook exists and covers at minimum: how to check logs/monitoring, how to roll back a bad deploy, how to restore from backup (referencing `M7-012`), who/how to notify.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** N/A — a documentation deliverable; have someone (or yourself, cold) actually try to follow it for a simulated incident and note anything confusing.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-014: Privacy Policy, Terms of Service, school DPA template
+
+(DPA = Data Processing Agreement — the legal document a school, as data controller, signs with Sharlo, as data processor, per `NFR-PRIV-01`'s processor/controller framing.)
+
+- **Goal:** Legal documents reflecting the actual architecture, including the processor/controller framing (`NFR-PRIV-01`) and the Public Result Announcement exception (`ADR-0012`) stated plainly, not omitted.
+- **Done-when:** A draft exists; **recommend a legal-professional review pass before publishing** — this is an explicit, flagged launch dependency outside pure engineering, not something to treat as "done" on an engineering draft alone.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A line-by-line cross-check that the policy's claims match actual code behavior, same discipline as `M7-007`.
+- **Stop-and-ask if:** You're about to treat an engineering-only draft as sufficient to publish — flag the need for real legal review explicitly in the report rather than silently calling this done.
+
+#### M7-015: Launch checklist sign-off
+
+- **Goal:** One consolidated go/no-go checklist referencing every other M7 task, plus `M1-011` (real-device scanning accuracy) and `M7-017` (the Shared-Drive ownership-transfer verification, below) — the launch-blocking dependencies that live outside M7's own numbering.
+- **Done-when:** Founder-reviewed and explicitly approved before the site goes public. **Cannot be signed off while `M1-011` is incomplete or has an unresolved missed `NFR-ACC-*` target, and cannot be signed off for the School plan specifically while `M7-017` is unresolved** — this task is a checklist, not a decision-maker; it doesn't override either of those gates.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** N/A — a sign-off gate.
+- **Stop-and-ask if:** Always — by definition, this task ends with the founder's explicit approval, not yours.
+
+#### M7-016: Google OAuth app verification submission
+
+- **Goal:** Submit the OAuth consent screen for Google's verification review.
+- **Done-when:** Submitted with enough lead time before launch (Google's review can take days to weeks). **Not independently doable by an agent** — needs a live public domain with a hosted privacy policy, ownership of the real Google Cloud Console project, a recorded demo video, and the founder's own branding assets. See `HANDOFF.md` §4, item 3. Founder-executed or founder-coordinated.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** N/A.
+- **Stop-and-ask if:** Always, at the point this task would otherwise require founder-owned accounts/artifacts you don't have — don't attempt a workaround, flag it as blocked exactly the way `M1-011` already is.
+
+#### M7-017: Shared Drive ownership-transfer-gap verification — **NEW, added during this handoff, pre-launch-blocking for the School plan specifically**
+
+- **Goal:** Resolve the real, flagged doubt (`docs/ADR/0010-school-plan-multi-recipient-encryption.md` addendum item 5, `docs/reports/SHARLO-M3-018.md`) about whether the folder-path (non-Workspace) School-plan teacher-removal continuity mitigation actually works at all.
+- **Done-when:** One of the following is true, confirmed against a **real** Google Drive account (not a mock) — the first real-account verification this specific mechanism has ever had:
+  1. The admin-initiated self-upgrade-to-owner call (`apps/web/lib/drive/transfer-teacher-owned-files.ts`) is confirmed to actually succeed without the departing teacher's cooperation, against a real non-owner admin account — the finding was wrong, the mechanism works, document that and close this out.
+  2. It's confirmed to fail (matching the finding's suspicion) — in which case product copy about the folder-path continuity guarantee is corrected to state the real, weaker guarantee honestly (see `docs/SRS.md` `FR-SCHOOL-05`'s own acceptance criteria, which already anticipates this), **and** a decision is made with the founder about whether a different mitigation is worth building (e.g., requiring the departing teacher's own session to run the transfer before access is revoked) or whether the folder path simply ships with this known, disclosed limitation.
+- **Must reuse / must not duplicate:** The existing mechanism in `apps/web/lib/drive/transfer-teacher-owned-files.ts`/`revoke-school-container-access.ts`/`remove-teacher-from-school.ts` — this task verifies and, if needed, fixes or redesigns that mechanism, it doesn't build a parallel one.
+- **Test requirements:** A real test against a real Google Drive account (this project has none configured anywhere yet — provisioning one, even a free personal Google account for testing purposes, is this task's own first step) with two accounts: one acting as "admin," one as "departing teacher," confirming the actual Drive API behavior rather than a mocked assumption.
+- **Stop-and-ask if:** The mechanism is confirmed to fail (outcome 2 above) — which specific fix or disclosure approach to take is the founder's call, not yours; present the confirmed finding and the realistic options, don't pick one and build it.
+
+#### M7-018: SAST pass
+
+- **Goal:** Static-analysis security review across the codebase.
+- **Done-when:** Every flagged issue is resolved or explicitly triaged with reasoning in the review report.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** N/A — a review/tooling pass; the deliverable is the report.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-019: OWASP Top 10 pass
+
+- **Goal:** An explicit OWASP Top 10 review, with Broken Access Control/IDOR given particular weight (see `M7-021`'s dedicated adversarial test for the live-attack complement to this static review), plus injection and authentication-flaw categories.
+- **Done-when:** The review report lists every finding and its resolution, and **explicitly states** that the "passwords hashed with bcrypt/Argon2" checklist line doesn't apply to this architecture by design (auth is Google OAuth, no server-side password ever exists; the Encryption Passphrase is designed to never leave the client) — state this as a deliberate architectural match, never silently omit the line as if it were overlooked.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** N/A — the deliverable is the report.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-020: Dependency-audit sweep
+
+- **Goal:** A final manual dependency audit beyond `M0-004`'s continuous Dependabot coverage.
+- **Done-when:** No known-vulnerable package remains unresolved at launch.
+- **Must reuse / must not duplicate:** `M0-004`'s existing Dependabot setup — this is a final manual sweep on top of continuous coverage, not a replacement for it.
+- **Test requirements:** N/A — the deliverable is the audit result, with every finding resolved or explicitly accepted with reasoning.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-021: Multi-tenant isolation penetration test
+
+- **Goal:** From a real test account, actually attempt — through the running API, not a database-level test — to read another tenant's data. The adversarial, application-layer complement to `M0-006`'s existing database-level RLS proof.
+- **Done-when:** The attempt and its result are documented regardless of outcome. **A successful cross-tenant read is launch-blocking, not a note for later.**
+- **Must reuse / must not duplicate:** N/A — this is explicitly meant to attack the system the way a real malicious user would, not reuse the existing RLS unit test.
+- **Test requirements:** The actual attempted attack, against a real running instance with real (test) tenant data.
+- **Stop-and-ask if:** The attempt succeeds — stop everything else and treat this as the highest-priority finding in the entire project at that moment.
+
+#### M7-022: Custom error pages + security headers
+
+- **Goal:** Production errors never expose a raw stack trace; security headers (CSP, HSTS, X-Frame-Options, equivalents) on every response.
+- **Done-when:** A deliberately triggered server error in production mode shows a clean, generic page, not a stack trace; a free scan tool (e.g. Mozilla Observatory) against staging passes with no unresolved findings.
+- **Must reuse / must not duplicate:** The Caddy layer (already in front of both `web` and `api`, per `docs/ARCHITECTURE.md` §12) is the specified single place for security headers — don't duplicate per-app.
+- **Test requirements:** The deliberate-error test and the Observatory scan, both against a real staging deployment.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-023: OWASP ZAP + SSL Labs scan against staging
+
+- **Goal:** Automated vulnerability scan (ZAP) and TLS config test (SSL Labs) against a real staging deployment.
+- **Done-when:** Both scans' reports are attached to this task's own report, every finding resolved or explicitly triaged.
+- **Must reuse / must not duplicate:** N/A — needs `M0-005`'s VPS or an equivalent staging box provisioned first; cannot run against nothing.
+- **Test requirements:** The two scans themselves.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M7-024: Manual QA pass on staging
+
+- **Goal:** A full human-driven walkthrough of every core flow (sign-up/sign-in, scanning, exam creation, results, billing, admin) on a staging deployment — **never production, never real user data.**
+- **Done-when:** A written walkthrough log exists (what was checked, what was found, what was fixed and independently re-verified afterward) — not just "QA passed."
+- **Must reuse / must not duplicate:** N/A — genuinely manual, the complement to automated test coverage, same discipline already established for the detection engine and crypto in `HANDOFF.md` §5.6.
+- **Test requirements:** The walkthrough itself, with every found issue fixed and re-verified, documented.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M8 — Class Management & Attendance (Pro/School)
+
+Depends on M3 (accounts/Drive encryption) for daily attendance; `M8-004` additionally depends on M1 (detection engine) and M2 (template geometry) for the exam-day bubble specifically. Not atomized further — the original 5 tasks are already single-outcome. Deep-spec format applied for consistency.
+
+#### M8-001: Class/section CRUD + persistent roster
+
+- **Goal:** Create classes/sections; add students (name, roll number) — using the **same underlying roster record** `FR-ROSTER-01`'s per-exam CSV upload already populates, never a second, parallel student list.
+- **Done-when:** A student added via a class is immediately usable for roll-number matching on a scan for that class, and vice versa — verified both directions in a test.
+- **Must reuse / must not duplicate:** `lib/roster/roster-store.ts`'s existing roster envelope primitives (`M3-007`) — this task builds a Class Management UI on top of the exact same envelopes, it does not create a second roster data model. Re-read `docs/ARCHITECTURE.md` §7's roster paragraph before starting — it says this explicitly.
+- **Test requirements:** The bidirectional-immediate-usability test described above.
+- **Stop-and-ask if:** You find yourself about to create a second roster/student-list table or envelope type "to keep Class Management clean" — don't; that's the exact thing this task's spec forbids.
+
+#### M8-002: Daily attendance marking
+
+- **Goal:** Present/absent/leave marking with a fast "mark all present, then select absentees" flow.
+- **Done-when:** Marking a 40-student class with 3 absentees takes 3 taps, not 40.
+- **Must reuse / must not duplicate:** A new `class`-type encrypted envelope (per `docs/ARCHITECTURE.md` §7) — follows the same envelope-crypto/schema-versioning pattern (`envelope-crypto.ts`, `envelope-migration.ts`) every other content type already uses.
+- **Test requirements:** A tap-count test for the all-present-except-N flow.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M8-003: Attendance history & monthly reports
+
+- **Goal:** History and monthly % reports, exportable/printable.
+- **Done-when:** A month's report renders from **one** Drive/local read — one file per class _per month_, not per day, a deliberate grain choice so a report doesn't cost ~30 file reads.
+- **Must reuse / must not duplicate:** The one-file-per-class-per-month envelope grain, and `lib/export/sanitize.ts`'s existing formula-injection utility if this report is exportable (`ADR-0013`) — never a new sanitization check.
+- **Test requirements:** A test confirming exactly one read produces a full month's report.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M8-004: Exam-day attendance bubble + auto-mark
+
+- **Goal:** A present/absent bubble next to the roll number, auto-marked during the normal scan flow — no extra teacher action.
+- **Done-when:** Scanning a class produces per-student attendance with zero extra action; an ambiguous attendance mark routes to the Review Queue exactly like any other ambiguous mark (`NFR-ACC-03`) — never guessed.
+- **Must reuse / must not duplicate:** A new template-geometry region (versioned per `docs/ARCHITECTURE.md` §14, the same per-type schema-versioning pattern `M3-013` established); stored as a field on that student's entry **within the exam's `examResults` envelope**, not a separate Drive file — no extra round-trip per sheet.
+- **Test requirements:** An ambiguous-attendance-mark-routes-to-Review-Queue test, following the exact same pattern as every other ambiguous-mark test in the detection-engine test harness.
+- **Stop-and-ask if:** You're tempted to auto-resolve an ambiguous attendance mark because "it's just attendance, lower stakes than a grade" — don't; `NFR-ACC-03` applies without a severity exception for this field.
+
+#### M8-005: Free-tier gating for Class Management
+
+- **Goal:** Wire `M4-008`'s entitlement check into every Class Management entry point.
+- **Done-when:** A Free-plan test account sees Class Management as locked/upsell, never silently broken or half-working.
+- **Must reuse / must not duplicate:** `M4-008`'s entitlement layer and `M4-009`'s caching layer directly — this is the gating pattern every other Addendum-2-era client-only feature (`M9`–`M11`) will repeat; get it right here as the template.
+- **Test requirements:** A Free-plan-account-sees-locked-state test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M9 — Exam Configuration & Grading (Pro/School)
+
+Depends on M1 (detection engine — `M9-002` specifically needs a new bubble-region type) and M2 (exam creation/templates). Not atomized further. Deep-spec format applied.
+
+#### M9-001: Negative marking
+
+- **Goal:** Optional, per-exam, teacher-defined deduction per wrong answer.
+- **Done-when:** The deduction applies only to **confidently-wrong** answers, never to an unresolved Review-Queue item.
+- **Must reuse / must not duplicate:** The existing client-side scoring engine — this is a configuration parameter it reads, not a parallel scoring path.
+- **Test requirements:** A test confirming an unresolved Review-Queue item is never deducted against.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M9-002: Multiple sets/versions + auto-detect
+
+- **Goal:** Set-code bubble region, read before scoring, selects the matching answer key automatically.
+- **Done-when:** A sheet whose set code doesn't match any configured set routes to the Review Queue, **never guessed**.
+- **Must reuse / must not duplicate:** The existing roll-number-reading pattern (`lib/scanning/roll-number.ts`, `M1-009`) as the template for this new bubble-region type — same "read before scoring, unmatched routes to review" shape.
+- **Test requirements:** The unmatched-set-code-routes-to-review test, following the detection-engine test harness pattern.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M9-003: Partial credit / void question + recalculation
+
+- **Goal:** Mark a question void or multi-correct after scanning; recompute every already-scanned sheet for that exam.
+- **Done-when:** Recalculation is a **single read-recompute-write** of the one `examResults` envelope (not N round-trips for N students), and is deterministic — running it twice on the same input produces the same output, verified by a test.
+- **Must reuse / must not duplicate:** The existing one-envelope-per-exam-holds-all-students model (`docs/ARCHITECTURE.md` §7) — this task's own correctness depends on that granularity already being right; don't split `examResults` by student to "simplify" this.
+- **Test requirements:** The determinism test (run twice, compare output) and a single-read-recompute-write test (count actual storage operations, don't just assert the result is correct).
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M9-004: Grade bands
+
+- **Goal:** Configurable mark-range → letter-grade mapping.
+- **Done-when:** Changing the scale re-renders grades from already-stored scores, with no re-scanning.
+- **Must reuse / must not duplicate:** N/A — new, self-contained config + a pure render function over existing stored scores.
+- **Test requirements:** A scale-change-re-renders-without-rescan test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M9-005: Exam/template reuse
+
+- **Goal:** "Duplicate this exam" — configuration only, never carries over a prior answer key or results.
+- **Done-when:** Duplicating an exam and immediately checking results shows an empty, unscored state, not the original's data.
+- **Must reuse / must not duplicate:** N/A — new, self-contained; explicitly must **not** reuse the original exam's `examResults` envelope content, only its configuration fields.
+- **Test requirements:** The duplicate-then-check-empty-state test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M10 — Results, Reporting & Analytics (Pro/School)
+
+Depends on M3 (results infrastructure already built); `M10-005`/`M10-007` additionally depend on M8 (attendance data) and M9 (grade bands). Not atomized further. Deep-spec format applied.
+
+#### M10-001: Performance trend chart
+
+- **Goal:** Per-student score trend across exams.
+- **Done-when:** Trend renders correctly for a student with multiple exam results.
+- **Must reuse / must not duplicate:** Already-stored `examResults` envelopes across exams — a read/aggregation feature, no new storage.
+- **Test requirements:** A multi-exam trend-rendering test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M10-002: Class/section comparison
+
+- **Goal:** Side-by-side section average performance.
+- **Done-when:** Averages render correctly for a teacher with multiple sections.
+- **Must reuse / must not duplicate:** `lib/exams/class-analytics.ts`'s existing per-class computation (`M3-009`) — this is a new view composing multiple classes' already-computed analytics, not a new computation engine.
+- **Test requirements:** A multi-section comparison-rendering test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M10-003: Question tagging + topic analytics
+
+- **Goal:** Free-text topic tags per question; surfaces the class's weakest topics.
+- **Done-when:** Tags are exam-author-defined free text, not a fixed taxonomy.
+- **Must reuse / must not duplicate:** N/A — new field on exam configuration + a new aggregation.
+- **Test requirements:** A weakest-topics-surfaced-correctly test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M10-004: Roll-number auto-suggestion
+
+- **Goal:** Suggests the next unused roll number when adding a new student.
+- **Done-when:** Pure client-side computation over the existing roster, **no server round-trip**.
+- **Must reuse / must not duplicate:** N/A — a pure function over already-loaded roster data.
+- **Test requirements:** A no-network-call-made test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M10-005: Report card template
+
+- **Goal:** Branded, printable PDF combining exam results + attendance.
+- **Done-when:** Branding (school/college name, logo, color theme) is configured **once**, shared with `M12-005`'s announcement branding — not a separate config per feature.
+- **Must reuse / must not duplicate:** The `users.branding` jsonb field already specified in `docs/ARCHITECTURE.md` §6 — one branding config, reused by both this task and `M12-005`, never duplicated.
+- **Test requirements:** A test confirming a branding change here is immediately reflected in `M12`'s announcement output too (and vice versa), proving they genuinely share the one config.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M10-006: Leaderboard
+
+- **Goal:** Top-10/Top-3 default; a student's own rank is always visible even outside the visible top list; full-class view is explicit teacher opt-in, **never default-on**.
+- **Done-when:** The default-off, explicit-opt-in behavior is tested directly — this is a product-safety rule (student-wellbeing, exposing low ranks by default), not a minor UI detail. **A regression here (full leaderboard defaulting on) is `NFR-ACC-03`-severity, not a minor bug** — state this explicitly in the PR description of any change touching this feature, now and in the future.
+- **Must reuse / must not duplicate:** N/A — new, self-contained; but the same component/logic is reused by `M12-007`'s public check-page leaderboard (same Top-N-default rule) — build it reusably from the start, don't build two leaderboards.
+- **Test requirements:** The default-off test is the single most important one — write it first, not last.
+- **Stop-and-ask if:** None beyond the standing list — but treat any change to this feature's defaults, ever, as inherently stop-and-ask-worthy given the severity framing above.
+
+#### M10-007: Term / Consolidated report
+
+- **Goal:** Teacher picks any subset of a class's already-scored exams, generates one consolidated per-student report.
+- **Done-when:** Pure aggregation of already-stored `examResults` — no new storage, no re-scanning, reuses `M10-005`'s branding/template.
+- **Must reuse / must not duplicate:** `M10-005`'s report template and branding config directly.
+- **Test requirements:** A no-new-storage/no-rescan test (confirm by checking what storage operations actually happen, not just that output looks right).
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M11 — Manual Import & Safe Editable Results
+
+**Free/Pro/School split within this milestone, not uniformly Pro/School**: the editable-grid component itself (`M11-005`) is the same free component `M3-008` already built — what's gated is the import _entry point_ (every other task here), per `docs/SRS.md` §5.9a's table note. Depends on `M3-008` existing first (the grid's first call site). Not atomized further. Deep-spec format applied.
+
+#### M11-001: Client-side Excel/CSV parsing
+
+- **Goal:** Parse an already-prepared result file, entirely client-side.
+- **Done-when:** No server-side file processing at any point (`ADR-0001`'s client-side-only principle applied to a new input path).
+- **Must reuse / must not duplicate:** SheetJS or equivalent — a new client-side dependency, this is the one place it's genuinely needed.
+- **Test requirements:** A no-server-call-for-parsing test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M11-002: Column-mapping screen
+
+- **Goal:** One-time column-mapping with a deterministic fuzzy-name pre-fill, teacher always confirms before proceeding.
+- **Done-when:** The pre-fill logic is a fixed string-similarity heuristic, **not a model call, not "AI-assisted"** (`ADR-0014`) — and never silently accepted without the teacher's explicit confirmation click.
+- **Must reuse / must not duplicate:** N/A — new, deliberately deterministic logic.
+- **Test requirements:** A test confirming the pre-fill never auto-proceeds without an explicit confirm click.
+- **Stop-and-ask if:** You're tempted to make the column-mapping "smarter" with any AI/LLM call, even a small one — don't; `ADR-0014` forbids it explicitly and by name for exactly this feature.
+
+#### M11-003: Pre-save validation suite
+
+- **Goal:** Every validation check in `docs/SRS.md` `FR-IMPORT-03` runs and surfaces before any save path is reachable.
+- **Done-when:** Missing/duplicate roll numbers, column-count mismatches, non-numeric marks, and roster row-count mismatch (explicit missing/extra lists) each have a corresponding fixture test; every issue is visible in the preview before save is reachable.
+- **Must reuse / must not duplicate:** N/A — new validation logic, but follow the existing fixture-test-per-check-category pattern this codebase already uses throughout the detection-engine test harness.
+- **Test requirements:** One fixture test per listed check category — not one combined "validation works" test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M11-004: Confirm/Save gating
+
+- **Goal:** Save is disabled until issues are resolved, or an explicit "save anyway" override distinct from the normal save button.
+- **Done-when:** The override is a visibly distinct, deliberate action, never the same button as a clean save.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A test confirming save is disabled with unresolved issues, and that the override is a separate UI element.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M11-005: Reusable editable-grid component — second call site
+
+- **Goal:** **This is the exact same component `M3-008` already built** (`app/(app)/results-grid.tsx` + `lib/exams/results-grid-ops.ts`), given a second call site for import-row correction — not a second implementation.
+- **Done-when:** A fix made via one call site's usage is verifiably the same code path as the other — a shared component test, not two divergent ones.
+- **Must reuse / must not duplicate:** **Must reuse `results-grid.tsx` directly.** If you find yourself writing a new grid component "because the import context is a bit different," stop — that's exactly the duplication `FR-IMPORT-06` forbids by name.
+- **Test requirements:** A test exercising the grid through _both_ call sites and confirming identical underlying behavior.
+- **Stop-and-ask if:** The existing grid component genuinely can't support the import use case without a change that would affect its existing `M3-008` call site too — that's worth a quick flag (not necessarily a full stop) since it affects already-shipped behavior, but the fix is still extending the one component, never forking it.
+
+#### M11-006: Post-import dashboard note
+
+- **Goal:** "Imported on [date] — if something looks missing, re-check the import," so later-found issues are easy to fix by re-running the import.
+- **Done-when:** The note appears on the relevant class/exam dashboard after an import.
+- **Must reuse / must not duplicate:** N/A.
+- **Test requirements:** A note-appears-after-import test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M11-007: Universal formula-injection sanitization
+
+- **Goal:** Apply the shared `ADR-0013` sanitization utility on this new import path, **and retrofit-verify it against every existing export path** (`M3-010` and beyond).
+- **Done-when:** A fixture with a `=`-leading cell survives import → display → export as literal text at **every** touchpoint, not just the new one — a regression test covering the full existing export surface, not just this task's own new code.
+- **Must reuse / must not duplicate:** `lib/export/sanitize.ts`'s existing `sanitizeCellValue` (`ADR-0013`) — the one shared utility; this task calls it, it does not reimplement the check.
+- **Test requirements:** The multi-touchpoint survival test described above, explicitly covering every export path that existed before this task, not just the import path this task adds.
+- **Stop-and-ask if:** None beyond the standing list.
+
+---
+
+## M12 — Public Result Announcement / STRAI
+
+Depends on M3 (exam results must exist to publish) and M4 (billing/entitlement — this is a real server endpoint, `NFR-SEC-12` category (a)). **The one milestone that adds genuinely public-facing (unauthenticated) attack surface — read `docs/ADR/0012-public-result-announcement-dual-store.md` and `docs/ARCHITECTURE.md` §7a in full before starting any task here, no exceptions.** Not atomized further. Deep-spec format applied.
+
+#### M12-001: `public_results` table + STRAI ID generation
+
+- **Goal:** New Postgres table; ≥128 bits of entropy from a cryptographically secure random source (a CSPRNG — Cryptographically Secure Pseudo-Random Number Generator; e.g. `crypto.randomBytes`/`crypto.getRandomValues`, never `Math.random`), Crockford Base32 encoding.
+- **Done-when:** A generated ID's entropy is verified by an actual statistical sanity check in the test suite, not eyeballed.
+- **Must reuse / must not duplicate:** The table shape already specified in `docs/ARCHITECTURE.md` §6.
+- **Test requirements:** The entropy-sanity-check test described above.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-002: Publish flow
+
+- **Goal:** Client extracts exactly 4 fields (name, roll, marks, grade) from already-decrypted exam data, publishes them.
+- **Done-when:** A **code-level check** (typed payload, not just a description) proves no 5th field can be attached — a test that tries and fails to smuggle an extra field through.
+- **Must reuse / must not duplicate:** N/A — this payload type must be deliberately narrow, don't reuse a wider existing exam-data type for it.
+- **Test requirements:** The smuggle-an-extra-field-and-fail test described above — this is the actual safety mechanism, write it carefully.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-003: Public lookup endpoint
+
+- **Goal:** `(straiId, rollNumber) → one row or generic not-found`, rate-limited, CAPTCHA after a few failed attempts.
+- **Done-when:** Wrong-roll-number-valid-ID and invalid-ID produce **byte-identical** responses; burst requests trigger rate limiting then CAPTCHA.
+- **Must reuse / must not duplicate:** N/A — this is the _only_ code path that ever queries `public_results` (per `docs/ARCHITECTURE.md` §7a); don't create a second query path anywhere.
+- **Test requirements:** The byte-identical-response test (literally diff the two responses) and the rate-limit/CAPTCHA-escalation test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-004: Expiry + account-deletion cascade
+
+- **Goal:** `app_config.public_result_ttl_days`-driven expiry; deleted on owning account deletion.
+- **Done-when:** An expired ID's lookup is indistinguishable from an invalid one; `M7-006`'s account-deletion test explicitly includes confirming zero surviving `public_results` rows (this is the same cascade requirement stated in `M7-006` — don't build it twice, confirm it's wired through from whichever task implements it first).
+- **Must reuse / must not duplicate:** `M7-006`'s deletion cascade if it's built first — coordinate, don't duplicate.
+- **Test requirements:** The expired-indistinguishable-from-invalid test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-005: Branding config
+
+- **Goal:** School/college name, logo, color theme, reused by `M10-005`.
+- **Done-when:** Shares the exact same config as `M10-005` — one config, not two (see `M10-005`'s own spec for the shared-config test requirement).
+- **Must reuse / must not duplicate:** `users.branding` jsonb field, same as `M10-005`.
+- **Test requirements:** Covered by `M10-005`'s shared-config test if that task is built first; otherwise this task owns writing it.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-006: QR code generation
+
+- **Goal:** Client-side QR code deep-linking to the check page with the STRAI ID pre-filled.
+- **Done-when:** No server round-trip to produce the code.
+- **Must reuse / must not duplicate:** N/A — a client-side QR library, new dependency.
+- **Test requirements:** A no-network-call test.
+- **Stop-and-ask if:** None beyond the standing list.
+
+#### M12-007: Check-page leaderboard
+
+- **Goal:** Same Top-N-default, opt-in-full rule as `M10-006`.
+- **Done-when:** Identical default-off behavior to `M10-006`, verified by the same kind of test.
+- **Must reuse / must not duplicate:** **`M10-006`'s leaderboard component/logic directly** — this is explicitly the second call site that component should have been built reusably for; don't build a second leaderboard implementation.
+- **Test requirements:** The same default-off test `M10-006` has, run against this call site too.
+- **Stop-and-ask if:** None beyond the standing list — but same severity note as `M10-006`: any change to leaderboard defaults is treated as `NFR-ACC-03`-severity.
+
+---
+
+## M13 — Fee Tracker ⚠️ SPEC NOT WRITTEN — DO NOT START
+
+**This milestone has exactly zero tasks, on purpose.** "Fee Tracker (teacher tuition tier + principal/school rollup)" is one of exactly four pillars the founder has named as locked v1 scope — but, found during this handoff's reconciliation audit, it has never been given functional requirements, a data model, or a task breakdown anywhere in this project's history. See `docs/SRS.md` §5.17a for the full account of how this was found and confirmed, and `HANDOFF.md` §3.1 item 1.
+
+**Do not write a task breakdown for this milestone yourself.** Doing so would mean inventing requirements the founder never actually specified — this is explicitly a stop-and-ask situation (`.clinerules` §6, item 5: "any point where a task seems to require a feature or scope not covered by the locked four-pillar scope" — the inverse problem applies equally here: a pillar that _is_ in scope but has no actual spec is just as much a stop-and-ask as scope that isn't in scope at all).
+
+When the founder provides real requirements (what a fee record contains, how a payment is recorded, what "principal/school rollup" means concretely, whether this is student-PII-adjacent data needing client-side encryption like attendance, or something else entirely): write them up in `docs/SRS.md` as `FR-FEE-01` onward first, in that same ID/acceptance-criteria format every other FR section already uses, get that reviewed, and only then come back here and write this milestone's task breakdown at the same depth as every other milestone above.
 
 ---
 
@@ -239,20 +952,20 @@ M0 (foundation) ─┬─▶ M1 (scanning core) ─▶ M2 (templates/review) ─
                                                             │                                  │   depends on all)
                                                             ├──────────▶ M11 (import/grid) ────┤
                                                             └──────────▶ M12 (public results) ──┘
+
+M13 (Fee Tracker) — no dependency edges drawn; it has no tasks to depend on anything yet. Do not start.
 ```
 
-ADR-0005 and ADR-0010 are both confirmed, so nothing in M1–M4 is decision-blocked anymore. M6 can largely proceed in parallel with M1–M5 once M0 scaffolding exists.
-
-**M8–M12 (Addendum 2, 2026-09-24)** are all Pro/School feature work (`docs/SRS.md` §5.9a) added after M0–M7 were first scoped — added as new milestone numbers rather than renumbering M0–M7, to avoid breaking the many existing cross-references (ADRs, reports) that already cite specific M-numbers. Read top-to-bottom for content, not execution order — the diagram above is the actual dependency graph. **Per founder instruction (`docs/reports/SHARLO-M0-009.md`), M1 is authorized to start once the Addendum 2 docs PR is merged clean — M1 does not wait on M8–M12 being built, only on the docs describing them existing.** One open item blocks starting the _entitlement-check_ portions of M8–M11 specifically (not their client-only feature logic): `docs/SRS.md` NFR-SEC-12 is proposed, not yet founder-confirmed the way the rest of this addendum is — see decision 7 in `ARCHITECTURE.md` §15.
+M0 through M3 are done (except the founder-blocked items in each — see `HANDOFF.md` §1). **Starting M4 requires the founder's explicit "go" on M4**, the same standing rule that governed every milestone before it — this handoff authorizes nothing on its own. `M7-008`/`M7-009` (load/fuzz testing) and `M7-018`–`M7-023` (the security/QA sweep) don't need to wait for the rest of M7 to be underway — see each task's own note above — but all of M7 must be fully complete before public launch regardless of when individual tasks ran.
 
 ---
 
 ## Backlog (approved concepts, explicitly not scheduled into a milestone)
 
-Items here have founder sign-off to build _eventually_ but were explicitly kept out of v1 launch scope. Don't start one without first promoting it into a milestone above (which is itself worth a quick founder check that priorities haven't shifted).
+Unchanged from before this handoff — these remain concept-level entries, not deep-specced, because promoting one into a milestone (which itself needs a fresh founder check that priorities haven't shifted) is the explicit prerequisite before writing a real task breakdown for it, the same reasoning `M13` above now follows too.
 
-| ID          | Title                                                                 | Description                                                                                                                                                                                                                                                                                               | Requirement(s)         | Why it's here, not in a milestone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| BACKLOG-001 | Offline-first scanning                                                | Full scan flow (capture → score → local queue) works with zero network connection; only final Drive/local sync requires connectivity, queued if offline.                                                                                                                                                  | FR-SCAN-06, NFR-REL-01 | Founder approved the concept but explicitly deferred it past launch (`docs/reports/SHARLO-M0-007.md`) rather than building it into M1 as originally recommended.                                                                                                                                                                                                                                                                                                                                                                                       |
-| BACKLOG-002 | Trusted Web Activity (TWA) wrapper for Google Play Store              | Thin TWA wrapper around the existing PWA (not a separate codebase) for a Google Play Store listing (~$25 one-time Play Developer fee). No Apple App Store listing — Apple's review policy is unfavorable to thin PWA-wrapper apps, and Safari's "Add to Home Screen" already covers iOS users adequately. | —                      | Founder-approved concept (Addendum 3, 2026-09-25); explicitly a low-effort, post-revenue task, not a launch blocker — the PWA itself remains the only distribution mechanism at launch (confirms the existing CLAUDE.md non-negotiable, no native app).                                                                                                                                                                                                                                                                                                |
-| BACKLOG-003 | Additional institutional/admin features discussed and declined for v1 | Six items discussed with the founder but not approved for any build: bulk teacher onboarding/management, an exam-approval/moderation workflow before result publishing, deeper school-wide branding, formal tax invoices, school-wide broadcast, and bulk compliance export.                              | —                      | **Not the same status as the other rows above.** Addendum 9 (2026-10-01) reconfirmed scope stays locked to exactly the four pillars (Paper Creation/Scanning/Checking & Portal, Student Progress Tracker, Attendance, Fee Tracker). Unlike BACKLOG-001/002, there is no founder sign-off to build these eventually — recorded here only so they're a documented, intentional exclusion, not a backlog commitment, so they don't resurface as a surprise if proposed again. Do not promote into a milestone without a fresh, explicit founder go-ahead. |
+| ID          | Title                                                                 | Description                                                                                                                                                                                                                                                                                               | Requirement(s)         | Why it's here, not in a milestone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| BACKLOG-001 | Offline-first scanning                                                | Full scan flow (capture → score → local queue) works with zero network connection; only final Drive/local sync requires connectivity, queued if offline.                                                                                                                                                  | FR-SCAN-06, NFR-REL-01 | Founder approved the concept but explicitly deferred it past launch (`docs/reports/SHARLO-M0-007.md`) rather than building it into M1 as originally recommended.                                                                                                                                                                                                                                                                                                                                                                     |
+| BACKLOG-002 | Trusted Web Activity (TWA) wrapper for Google Play Store              | Thin TWA wrapper around the existing PWA (not a separate codebase) for a Google Play Store listing (~$25 one-time Play Developer fee). No Apple App Store listing — Apple's review policy is unfavorable to thin PWA-wrapper apps, and Safari's "Add to Home Screen" already covers iOS users adequately. | —                      | Founder-approved concept (Addendum 3, 2026-09-25); explicitly a low-effort, post-revenue task, not a launch blocker — the PWA itself remains the only distribution mechanism at launch (confirms the existing CLAUDE.md non-negotiable, no native app).                                                                                                                                                                                                                                                                              |
+| BACKLOG-003 | Additional institutional/admin features discussed and declined for v1 | Six items discussed with the founder but not approved for any build: bulk teacher onboarding/management, an exam-approval/moderation workflow before result publishing, deeper school-wide branding, formal tax invoices, school-wide broadcast, and bulk compliance export.                              | —                      | **Not the same status as the other rows above.** Addendum 9 (2026-10-01) reconfirmed scope stays locked to exactly the four pillars (Paper Creation/Scanning/Checking & Portal, Student Progress Tracker, Attendance, Fee Tracker). Unlike BACKLOG-001/002, there is no founder sign-off to build these eventually — recorded here only so they're a documented, intentional exclusion, not a backlog commitment, so they don't resurface as a surprise. Do not promote into a milestone without a fresh, explicit founder go-ahead. |

@@ -1,0 +1,91 @@
+# .clinerules — Sharlo project rules
+
+**Read `HANDOFF.md` first, before this file, before anything else.** It has the context and the "why" behind every rule below. This file is the literal, operational version — what to do, step by step, in each situation. If anything here seems to conflict with your own judgment, follow this file, not your judgment, and if you think this file is actually wrong, that itself is a stop-and-ask situation (§6) — don't silently override it either way.
+
+Every rule in this file is written to be followed literally, exactly as stated, with no inference required. If a rule says "always," it means always, not "usually." If a rule says "never," it means never, not "unless it seems fine this time."
+
+---
+
+## 1. Before you touch any code, every single time
+
+1. Read `HANDOFF.md` if you haven't this session, or if it's been a while.
+2. Open `docs/TASKS.md` and find the exact task you're about to work on. Read its full spec: Goal, Done-when, Must-reuse/must-not-duplicate, Test requirements, and task-specific stop-and-ask triggers. All five fields. Not just the title.
+3. If the task's description references an ADR (`docs/ADR/000X-*.md`), open that ADR and read it **in full** before writing any code. Not a summary, not the first paragraph — the whole file, including any addendum sections at the bottom.
+4. If the task is the first task of a milestone that hasn't started yet (M4, M5, M6, M7, M8, M9, M10, M11, M12, or anything in the Backlog section), **stop and confirm with the founder that this specific milestone is authorized to start**, even if an earlier milestone was authorized. See rule 5 below — this is not optional and not inferable from context.
+5. Only after 1–4 are done, start implementing.
+
+## 2. The milestone-gating rule — read this twice
+
+**You may freely work through every remaining task inside a milestone the founder has already said "go" on.** You may **never** start the first task of a new milestone without the founder explicitly saying "go" on that exact milestone, in this session or very recently, by name. This is true even if:
+
+- The previous milestone is 100% complete.
+- The next milestone is the obviously-next item in `docs/TASKS.md`.
+- You believe the founder would obviously want you to continue.
+- Nobody told you to stop.
+
+**None of those are "go."** If you are not certain the founder said "go" on the specific milestone you're about to start, the correct action is to stop and ask: "Milestone M_ is next in `docs/TASKS.md`. Should I start it?" — and wait for an actual yes before writing any code for it. Do not interpret silence as permission. Do not schedule a recurring check-in or automated trigger that advances milestones on its own — that has gone wrong on this exact project before and is treated as a serious mistake, not a minor one.
+
+## 3. Every task, start to finish — follow `docs/TASK-WORKFLOW.md` exactly
+
+`docs/TASK-WORKFLOW.md` has the full 14-step checklist. Follow it in order, every step, every task. Do not skip a step because it feels redundant for a small task. The steps that most commonly get skipped by a less experienced developer, flagged here specifically:
+
+- **Never push without running the full local CI-equivalent command first and seeing it pass.** Not "I'm pretty sure it'll pass" — actually run it, actually see green.
+- **Never treat a push as successful because the command didn't error.** Fetch the remote branch and compare SHAs. This is rule 7 in `docs/TASK-WORKFLOW.md` — do it every time, not just when something feels uncertain.
+- **Never merge a PR with any check still red, or any unresolved review thread, or a merge-conflict state.** All three must be clean. "Mostly passing" is not "passing."
+- **Never skip, disable, comment out, or quarantine a failing test to make CI green.** If a test is failing, either the code is wrong or the test is wrong — find out which, and fix that. If you genuinely cannot find the root cause after real effort, that's a stop-and-ask (§6), not a reason to disable the test.
+- **Never force-push over `main`.** Never rewrite history on a branch you didn't create. Never skip a pre-commit/CI hook with a bypass flag.
+
+## 4. Code and design rules — follow literally, no exceptions
+
+| If you're about to...                                                                 | Do this instead                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Write any code that processes a bubble-sheet image, OCR, or vision logic server-side    | **Stop.** This is forbidden, always. All image analysis is client-side, in the browser, via OpenCV.js. See `docs/ADR/0001-client-side-omr-with-opencvjs.md`.                                     |
+| Write any code path where plaintext student data (names, roll numbers, marks, answer keys, exam titles) reaches a server, a server log, or an error-tracking tool | **Stop.** This is forbidden, always, with exactly one narrow exception (`FR-PUBLISH-*`, the explicit opt-in public-result-announcement feature) that already exists and is not a precedent for anything else. |
+| Request a Google Drive OAuth scope broader than `drive.file`                            | **Stop.** Use Google's file-picker mechanism for anything that needs access to a resource your app didn't create. This is CI-enforced (`apps/api/scripts/check-oauth-scope.mjs`) — if that check fails, you widened the scope; narrow it back, don't update the check. |
+| Implement a cryptographic algorithm or primitive yourself                              | **Stop.** Use native WebCrypto (AES-256-GCM) or `libsodium-wrappers-sumo` (Argon2id, X25519 sealed boxes) — both already in use in this codebase. If neither has what you need, that's a stop-and-ask (§6), not a build-it-yourself moment. |
+| Give the admin panel, or any `apps/api` code, a dependency capable of decrypting student data | **Stop.** This is CI-enforced (`apps/api/scripts/check-no-decrypt-in-backend.mjs`) — if that check fails, remove the dependency, don't add an exception to the check.                            |
+| Write `process.env.SOME_NEW_API_KEY` for a third-party integration secret               | **Stop.** Add a row to `integration_credentials` instead and read it through `credential-store.ts`'s existing helpers. See `ADR-0017`.                                                           |
+| Hardcode a price, a plan limit, or a country-tier assignment in application code         | **Stop.** These are admin-configurable at runtime, always — read them from the relevant config table (`pricing_tiers`, `country_tier_map`, `app_config`, `feature_flags`), never a literal in code. |
+| Make a bubble-detection or roll-number-matching code path resolve an ambiguous case automatically instead of flagging it | **Stop.** Route it to the Review Queue. This is `NFR-ACC-03`, the single most important correctness property of this product. A regression here is a severe bug, not a minor one. |
+| Make a CSV/Excel export skip sanitizing a cell value starting with `= + - @`            | **Stop.** This is formula-injection and is explicitly called out (`NFR-SEC-06`). Use the existing shared utility (`lib/export/sanitize.ts`'s `sanitizeCellValue`), don't write a new check.      |
+| Add a new Postgres table that holds any tenant-scoped data without a Row-Level Security policy | **Stop.** Every tenant-scoped table needs an RLS policy before it ships. See `ADR-0008` and the existing tables in `apps/api/src/db/schema.ts` for the pattern to follow.                       |
+| Self-host an SMTP/mail server, or create a second email-provider account to route around a volume limit | **Stop.** Never, for any reason. See `docs/ADR/0011-transactional-email-provider.md`'s addendum. Upgrade the existing Resend plan instead.                                                       |
+| Build anything for "Fee Tracker"                                                       | **Stop.** This feature has no specification anywhere in this codebase — see `docs/SRS.md` §5.17a. This is the founder's call to specify first, not yours to infer.                              |
+| Reach for "use AI/an LLM" anywhere near student data, exam content, or grading           | **Stop.** This is explicitly forbidden (`ADR-0014`). The one narrow, separately-approved exception is AI-assisted support-ticket-reply *drafting only*, never auto-sent, with mandatory PII sanitization first (`ADR-0016`) — that exception does not generalize to anything else. |
+
+## 5. Commit, push, and PR mechanics
+
+- Work on a feature branch. `main` is protected.
+- Pin dependency versions; commit the lockfile with every dependency change.
+- Commit message style: imperative, concise, explain *why* not *what* (the diff already shows what). Match the existing commit history's style — look at `git log` before writing your first one.
+- One task = one PR, generally. If a task is genuinely too large for one PR, every individual commit within it must leave the repo in a working, CI-passing state on its own — never a commit that depends on a later commit to not be broken.
+- After a PR merges, restart your local branch from the new `main` before starting the next task (`git fetch origin main && git checkout -B <branch> origin/main`).
+
+## 6. Stop-and-ask-the-founder — the complete list
+
+**These situations are always a stop-and-ask, every single time, with zero exceptions, no matter how small, obvious, or time-pressured the moment feels.** "Stop and ask" means: write out the specific question, the specific options if there are any, and wait for an actual answer before writing code or making the decision yourself. Do not pick the option you think is probably right and proceed — that is not what this rule means.
+
+1. **Any cryptographic design choice not already fully specified by an existing ADR.** If you need a new key-wrapping scheme, a new way to share a secret between two parties, or anything crypto-shaped that doesn't already have a documented pattern in `docs/ADR/`, stop.
+2. **Any change touching multi-tenant data isolation** — a new or modified Row-Level Security policy, anything that determines which user's or school's data a query is allowed to return. Get this wrong once and it's a real data-leak incident, not a bug report.
+3. **Any payment/billing logic** — webhook handling, entitlement/plan changes, pricing logic, anything that touches real money or a provider's signature verification.
+4. **Any task whose "Done-when" criteria in `docs/TASKS.md` can't be fully satisfied exactly as written.** Do not reinterpret the task to make it satisfiable with what you've built — stop and ask whether the criteria should change, or whether you're missing something.
+5. **Any point where a task seems to require a feature or scope not covered by the locked four-pillar scope** (the core scan/grade/portal loop, Student Progress Tracker, Attendance, Fee Tracker) **and the backlog list** (`docs/TASKS.md`'s Backlog section). Never add scope on your own initiative, even scope that seems obviously good or obviously small.
+6. **Any CI check that fails repeatedly — 3 attempts, matching the CI retry-limit rule — without you finding a clear, understood root cause.** Stop, mark the task blocked with full details in its report, move to the next unblocked task.
+7. **Anything that would require modifying `CLAUDE.md`, this file (`.clinerules`), `docs/TASK-WORKFLOW.md`, or `HANDOFF.md` themselves.** These four files are the rules you operate under — you don't get to edit your own rulebook unilaterally, even if you're confident the edit is correct.
+
+If you are ever unsure whether something is a stop-and-ask situation, treat it as one. The cost of asking when you didn't strictly need to is small. The cost of not asking when you did need to has, on this project, repeatedly turned out to be a real incident, not a hypothetical one.
+
+## 7. What "done" means for any task
+
+A task is done when, and only when, all of the following are true — not most of them, all of them:
+
+1. The code satisfies every item in the task's "Done-when" list in `docs/TASKS.md`, exactly as written.
+2. Every test the task's "Test requirements" field calls for exists and passes.
+3. `npm run ci` passes locally.
+4. You pushed, verified the push landed (SHA comparison), opened a PR, and every GitHub check on that PR's current head commit is green — all of them.
+5. Any review comments are resolved or explicitly answered.
+6. A report exists at `docs/reports/<task-id>.md` in the required format (§5.7 of `HANDOFF.md`).
+7. `docs/TASKS.md`'s status marker for that task is updated.
+8. The PR is merged, and your local branch is restarted from the new `main`.
+
+If any one of these isn't true, the task isn't done — don't report it as done, don't move to the next task, don't let "basically done" stand in for "done."

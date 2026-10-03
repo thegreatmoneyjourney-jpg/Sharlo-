@@ -4,7 +4,7 @@
 
 ## Context
 
-Sharlo needs to detect corner alignment markers, dewarp a photographed bubble sheet, and read bubble fill state, fast enough to feel instantaneous (~2 seconds, zero clicks) and cheaply enough to support a generous free tier (150 sheets/month) without the per-scan cost eating the business model.
+Sharlo needs to detect corner alignment markers, dewarp a photographed bubble sheet, and read bubble fill state, fast enough to feel instantaneous (~2 seconds, zero clicks) and cheaply enough to support a generous free tier without the per-scan cost eating the business model. (The original kickoff figure here was 150 sheets/month; the free-tier quota has since changed — see `docs/SRS.md` `FR-BILLING-06` for the current number — but this ADR's actual decision, cost architecture, and reasoning are unaffected by that number either way.)
 
 ## Decision
 
