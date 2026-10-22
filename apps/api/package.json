@@ -17,22 +17,22 @@
     "check-oauth-scope": "node scripts/check-oauth-scope.mjs"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.1.2",
-    "@fastify/cors": "^11.3.0",
-    "@fastify/rate-limit": "^11.2.0",
-    "drizzle-orm": "^0.45.3",
-    "fastify": "^5.1.0",
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/rate-limit": "^11.2.1",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.7",
     "postgres": "^3.4.9",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
-    "@types/node": "^22.10.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
     "drizzle-kit": "^0.31.11",
-    "eslint": "^9.17.0",
+    "eslint": "^10.13.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.18.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.5"
   }
 }
